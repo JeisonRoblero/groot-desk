@@ -6,6 +6,7 @@ A lightweight, automated Linux desktop session manager for Termux. This tool coo
 [![Platform: Termux](https://img.shields.io/badge/Platform-Termux-green.svg)](https://termux.dev/)
 [![Language: Bash](https://img.shields.io/badge/Language-Bash-4EAA25.svg)](https://www.gnu.org/software/bash/)
 
+<!-- markdownlint-disable MD033 -->
 <br>
 
 <div align="center">
@@ -15,6 +16,7 @@ A lightweight, automated Linux desktop session manager for Termux. This tool coo
 </a>
 
 </div>
+<!-- markdownlint-enable MD033 -->
 
 ---
 
@@ -28,6 +30,7 @@ A lightweight, automated Linux desktop session manager for Termux. This tool coo
 ## Requirements
 
 The following packages are required on the host device:
+
 - `termux-x11` (both the Android APK and the corresponding Termux package)
 - `termux-api` (package for system integration)
 - `proot-distro` (for managing containers)
@@ -51,7 +54,7 @@ proot-desk
 ## Command Reference
 
 | Command | Action |
-|---|---|
+| --- | --- |
 | `proot-desk` | Runs the setup wizard to install, select, or launch a desktop. |
 | `proot-desk start <distro>` | Boots the specified container and launches the desktop environment. |
 | `proot-desk start <distro> :<n>` | Boots the session on display port `:<n>` (e.g. `:2`). |
@@ -61,7 +64,7 @@ proot-desk
 | `proot-desk stop <distro>` | Stops the session and display server for a specific container. |
 | `proot-desk kill <pid\|display\|distro\|all>` | Kills a specific session process PID, display server port, or container session. |
 | `proot-desk reset <distro>` | Clears custom desktop/display configurations for a distro (keeps container rootfs). |
-| `proot-desk remove-desk <distro>` | Uninstalls desktop environment package packages and dependencies from target container. |
+| `proot-desk remove-desk <distro>` | Uninstalls desktop environment packages and dependencies from target container. |
 | `proot-desk delete <distro>` | Completely deletes the distro container filesystem and all configuration settings. |
 | `proot-desk status` | Lists all active display ports and running distributions. |
 | `proot-desk list` | Displays installed distributions along with saved parameters. |
@@ -82,9 +85,11 @@ proot-desk
 ## Session Settings
 
 All configuration details are stored in JSON format at the following location:
+
 - `$HOME/.config/proot-desk/config.json`
 
 Log files containing standard output from background processes are stored at:
+
 - `$HOME/.config/proot-desk/proot-desk.log`
 
 ---
@@ -97,11 +102,13 @@ Contributions are welcome! Whether it's a bug report, a feature suggestion, or a
 
 ## Support
 
-If this project has been useful to you, consider buying me a coffee - it genuinely helps keep the work going!
+If this project has been useful to you, consider buying me a coffee - it genuinely helps keep the work going.
 
+<!-- markdownlint-disable MD033 -->
 <div align="center">
 
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20on%20Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/JeisonRoblero)
 [![PayPal](https://img.shields.io/badge/PayPal-Donate%20via%20PayPal-003087?style=for-the-badge&logo=paypal&logoColor=white)](https://paypal.me/JeisonRoblero)
 
 </div>
+<!-- markdownlint-enable MD033 -->
