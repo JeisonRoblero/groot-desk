@@ -10,7 +10,7 @@ A lightweight, automated Linux desktop session manager for Termux. This tool coo
 
 <div align="center">
 
-<a href="https://raw.githubusercontent.com/Jeison/proot-desk/main/proot-desk" target="_blank" rel="noopener noreferrer">
+<a href="https://raw.githubusercontent.com/JeisonRoblero/proot-desk/main/proot-desk" target="_blank" rel="noopener noreferrer">
   <img src="https://img.shields.io/badge/DOWNLOAD_SCRIPT-Direct_Download_Link-0078D4?style=for-the-badge&logo=git&logoColor=white" alt="Download proot-desk Script" />
 </a>
 
@@ -38,7 +38,7 @@ The following packages are required on the host device:
 To download the script and install it as a system command, run the following:
 
 ```bash
-curl -sLO https://raw.githubusercontent.com/Jeison/proot-desk/main/proot-desk
+curl -sLO https://raw.githubusercontent.com/JeisonRoblero/proot-desk/main/proot-desk
 bash proot-desk
 ```
 
