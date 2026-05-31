@@ -1,4 +1,4 @@
-# Contributing to proot-desk
+# Contributing to groot-desk
 
 Thanks for taking the time to contribute! Here's everything you need to know.
 
@@ -22,8 +22,8 @@ Thanks for taking the time to contribute! Here's everything you need to know.
 2. **Clone** your fork locally
 
     ```bash
-    git clone https://github.com/YOUR_USERNAME/proot-desk.git
-    cd proot-desk
+    git clone https://github.com/YOUR_USERNAME/groot-desk.git
+    cd groot-desk
     ```
 
 3. **Create a branch** for your change
@@ -66,7 +66,7 @@ Keep it simple and descriptive. Use a short prefix:
 
 ## Bug Reports & Feature Requests
 
-Open an [issue](https://github.com/JeisonRoblero/proot-desk/issues) and describe:
+Open an [issue](https://github.com/JeisonRoblero/groot-desk/issues) and describe:
 
 - What you expected to happen
 - What actually happened

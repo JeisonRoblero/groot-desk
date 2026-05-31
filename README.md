@@ -1,4 +1,4 @@
-# proot-desk
+# groot-desk
 
 Your full Linux workflow, in your pocket.
 Turn your Android phone into a full Linux desktop - any distro, any screen, no root required.
@@ -13,8 +13,8 @@ Run independent desktops simultaneously. Fully interactive.
 <br>
 
 <div align="center">
-<a href="https://cdn.jsdelivr.net/gh/JeisonRoblero/proot-desk@main/proot-desk" target="_blank" rel="noopener noreferrer">
-  <img src="https://img.shields.io/badge/DOWNLOAD_SCRIPT-Direct_Download_Link-0078D4?style=for-the-badge&logo=git&logoColor=white" alt="Download proot-desk Script" />
+<a href="https://cdn.jsdelivr.net/gh/JeisonRoblero/groot-desk@main/groot-desk" target="_blank" rel="noopener noreferrer">
+  <img src="https://img.shields.io/badge/DOWNLOAD_SCRIPT-Direct_Download_Link-0078D4?style=for-the-badge&logo=git&logoColor=white" alt="Download groot-desk Script" />
 </a>
 </div>
 <!-- markdownlint-enable MD033 -->
@@ -59,20 +59,20 @@ Other utilities are expected to install automatically. If the automated installa
 To download the script and install it as a system command, run the following:
 
 ```bash
-curl -sL "https://raw.githubusercontent.com/JeisonRoblero/proot-desk/main/proot-desk" -o proot-desk && chmod +x proot-desk && ./proot-desk
+curl -sL "https://raw.githubusercontent.com/JeisonRoblero/groot-desk/main/groot-desk" -o groot-desk && chmod +x groot-desk && ./groot-desk
 ```
 
 The script automatically registers itself under the system path. Once installed, invoke the tool from any directory:
 
 ```bash
-proot-desk
+groot-desk
 ```
 
 ## How it works
 
 ### Interactive Setup Wizard Flow
 
-By running `proot-desk`, an interactive console guide launches to automate configuration:
+By running `groot-desk`, an interactive console guide launches to automate configuration:
 
 1. **System & Dependency Scan**
 
@@ -107,27 +107,27 @@ To display the desktop environment on another device (such as a computer, tablet
 
 | Command | Action |
 | --- | --- |
-| `proot-desk` | Setup wizard - install, select, or launch a desktop |
-| `proot-desk start <distro>` | Start with last used or detected desktop |
-| `proot-desk start <distro> :<n>` | Start on a specific display port |
-| `proot-desk start <distro> :<n> <de>` | Start a specific desktop on a specific display |
-| `proot-desk start <distro> -y` | Start with all defaults, no prompts |
-| `proot-desk stop` | Stop all active sessions |
-| `proot-desk stop <distro>` | Stop a specific distro session |
-| `proot-desk restart` | Restart all sessions |
-| `proot-desk restart <distro>` | Restart a specific session |
-| `proot-desk show` | Refresh the desktop on all connected screens |
-| `proot-desk status` | List active display ports and running distros |
-| `proot-desk list` | List installed distros and saved settings |
-| `proot-desk mode <distro> cpu\|gpu` | Set rendering preference |
-| `proot-desk mode <distro> standalone\|phone` | Set connection mode |
-| `proot-desk mode <distro> <WxH>` | Set custom resolution (e.g. `1920x1080`) |
-| `proot-desk logs` | Show recent background logs |
-| `proot-desk kill <pid\|display\|distro\|all>` | Kill by PID, display port, distro name, or all |
-| `proot-desk reset <distro>` | Clear saved settings, keep distro files |
-| `proot-desk remove-desk <distro>` | Uninstall desktop packages from distro |
-| `proot-desk delete <distro>` | Fully delete container distro and all settings |
-| `proot-desk uninstall` | Remove proot-desk, keep installed distros |
+| `groot-desk` | Setup wizard - install, select, or launch a desktop |
+| `groot-desk start <distro>` | Start with last used or detected desktop |
+| `groot-desk start <distro> :<n>` | Start on a specific display port |
+| `groot-desk start <distro> :<n> <de>` | Start a specific desktop on a specific display |
+| `groot-desk start <distro> -y` | Start with all defaults, no prompts |
+| `groot-desk stop` | Stop all active sessions |
+| `groot-desk stop <distro>` | Stop a specific distro session |
+| `groot-desk restart` | Restart all sessions |
+| `groot-desk restart <distro>` | Restart a specific session |
+| `groot-desk show` | Refresh the desktop on all connected screens |
+| `groot-desk status` | List active display ports and running distros |
+| `groot-desk list` | List installed distros and saved settings |
+| `groot-desk mode <distro> cpu\|gpu` | Set rendering preference |
+| `groot-desk mode <distro> standalone\|phone` | Set connection mode |
+| `groot-desk mode <distro> <WxH>` | Set custom resolution (e.g. `1920x1080`) |
+| `groot-desk logs` | Show recent background logs |
+| `groot-desk kill <pid\|display\|distro\|all>` | Kill by PID, display port, distro name, or all |
+| `groot-desk reset <distro>` | Clear saved settings, keep distro files |
+| `groot-desk remove-desk <distro>` | Uninstall desktop packages from distro |
+| `groot-desk delete <distro>` | Fully delete container distro and all settings |
+| `groot-desk uninstall` | Remove groot-desk, keep installed distros |
 
 ## Supported Desktop Environments
 
@@ -144,11 +144,11 @@ To display the desktop environment on another device (such as a computer, tablet
 
 All configuration details are stored in JSON format at the following location:
 
-- `$HOME/.config/proot-desk/config.json`
+- `$HOME/.config/groot-desk/config.json`
 
 Log files containing standard output from background processes are stored at:
 
-- `$HOME/.config/proot-desk/proot-desk.log`
+- `$HOME/.config/groot-desk/groot-desk.log`
 
 ---
 
