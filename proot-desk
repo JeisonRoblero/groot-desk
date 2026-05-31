@@ -518,52 +518,50 @@ disable_phantom_killer() {
 detect_display_resolution() {
   local target_display="$1"
 
-  # Display :3 (HDMI) adapts to the external monitor resolution
-  if [ "$target_display" = ":3" ]; then
-    if command -v dumpsys &>/dev/null; then
-      local displays
-      displays=$(dumpsys display 2>/dev/null)
-      if [ -n "$displays" ]; then
-        local ext_w="" ext_h=""
-        
-        # Try format: " 1920 x 1080," or " 1920x1080 "
-        local match
-        match=$(echo "$displays" | grep -Eo '[0-9]+\s*x\s*[0-9]+' | tr -d ' ' | sort -u)
+  # Dynamically adapt to external monitor/widescreen resolutions if detected
+  if command -v dumpsys &>/dev/null; then
+    local displays
+    displays=$(dumpsys display 2>/dev/null)
+    if [ -n "$displays" ]; then
+      local ext_w="" ext_h=""
+      
+      # Try format: " 1920 x 1080," or " 1920x1080 "
+      local match
+      match=$(echo "$displays" | grep -Eo '[0-9]+\s*x\s*[0-9]+' | tr -d ' ' | sort -u)
+      while read -r r; do
+        [ -z "$r" ] && continue
+        local w="${r%x*}"
+        local h="${r#*x}"
+        if [ "$w" -gt "$h" ] && [ "$w" -ge 1280 ]; then
+          ext_w="$w"
+          ext_h="$h"
+        fi
+      done <<< "$match"
+      
+      # Try format: "width=1920, height=1080"
+      if [ -z "$ext_w" ]; then
+        match=$(echo "$displays" | grep -Eo 'width=[0-9]+,\s*height=[0-9]+' | tr -d ' ' | sort -u)
         while read -r r; do
           [ -z "$r" ] && continue
-          local w="${r%x*}"
-          local h="${r#*x}"
+          local w
+          w=$(echo "$r" | grep -Eo 'width=[0-9]+' | cut -d= -f2)
+          local h
+          h=$(echo "$r" | grep -Eo 'height=[0-9]+' | cut -d= -f2)
           if [ "$w" -gt "$h" ] && [ "$w" -ge 1280 ]; then
             ext_w="$w"
             ext_h="$h"
           fi
         done <<< "$match"
-        
-        # Try format: "width=1920, height=1080"
-        if [ -z "$ext_w" ]; then
-          match=$(echo "$displays" | grep -Eo 'width=[0-9]+,\s*height=[0-9]+' | tr -d ' ' | sort -u)
-          while read -r r; do
-            [ -z "$r" ] && continue
-            local w
-            w=$(echo "$r" | grep -Eo 'width=[0-9]+' | cut -d= -f2)
-            local h
-            h=$(echo "$r" | grep -Eo 'height=[0-9]+' | cut -d= -f2)
-            if [ "$w" -gt "$h" ] && [ "$w" -ge 1280 ]; then
-              ext_w="$w"
-              ext_h="$h"
-            fi
-          done <<< "$match"
-        fi
-        
-        if [ -n "$ext_w" ]; then
-          echo "${ext_w}x${ext_h}"
-          return 0
-        fi
+      fi
+      
+      if [ -n "$ext_w" ]; then
+        echo "${ext_w}x${ext_h}"
+        return 0
       fi
     fi
   fi
 
-  # Default fallback for HDMI when no monitor is detected, or for Wireless display :2
+  # Default fallback resolution if no displays are connected or detected
   echo "1920x1080"
 }
 
@@ -2308,12 +2306,14 @@ EOF
   fi
 
   local success=0
-  local active_mode=""
+  ACTIVE_MODE=""
   local bind_args=""
   local env_vars=""
 
   for mode in "${MODES[@]}"; do
-    print_step "Attempting launch with rendering mode: ${mode}..."
+    local display_mode="$mode"
+    [ "$mode" = "software" ] && display_mode="CPU"
+    print_step "Attempting launch with rendering mode: ${display_mode}..."
 
     local start_log_lines=0
     if [ -f "$LOG_FILE" ]; then
@@ -2452,7 +2452,7 @@ EOF
 
     if [ $died -eq 0 ]; then
       success=1
-      active_mode="$mode"
+      ACTIVE_MODE="$mode"
       break
     else
       local end_log_lines=0
@@ -2468,9 +2468,11 @@ EOF
         fi
       fi
 
-      print_warn "Acceleration mode '${mode}' failed. Cleaning up host servers..."
+      local display_mode="$mode"
+      [ "$mode" = "software" ] && display_mode="CPU"
+      print_warn "Acceleration mode '${display_mode}' failed. Cleaning up host servers..."
       if [ -n "$mode_errors" ]; then
-        echo -e "${GRAY}      Specific errors / recent logs during '${mode}' attempt:${RESET}"
+        echo -e "${GRAY}      Specific errors / recent logs during '${display_mode}' attempt:${RESET}"
         echo "$mode_errors" | sed 's/^/      /g'
       fi
 
@@ -2651,17 +2653,15 @@ EOF
     if [ "$is_independent" -eq 1 ]; then
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Standalone VNC-Only session active."
       print_box_sep "─" "${GREEN}${BOLD}"
-      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Multi-Display Output Active:"
-      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Wireless: Connect VNC client to ${ip_addr}:${vnc_port}"
-      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "   (Standalone mode: Independent widescreen ${custom_res})"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Display Output:"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - VNC Address: ${ip_addr}:${vnc_port}"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Resolution:  ${custom_res} (Independent)"
     else
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Termux-X11 session active."
       print_box_sep "─" "${GREEN}${BOLD}"
-      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Multi-Display Output Active:"
-      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Local Screen: Visible on device display."
-      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - HDMI Output: Connect USB-C to HDMI monitor."
-      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Wireless: Connect VNC client to ${ip_addr}:${vnc_port}"
-      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "   (Phone mode: Mirrors phone screen scale)"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Display Outputs:"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Phone Screen: View via Termux:X11 app"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - VNC Mirror:   ${ip_addr}:${vnc_port} (Optional)"
     fi
 
     print_box_sep "─" "${GREEN}${BOLD}"
@@ -2673,36 +2673,11 @@ EOF
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - User:        root (passwordless)"
     fi
     local friendly_mode="CPU"
-    [ "$active_mode" != "software" ] && friendly_mode="GPU"
+    [ "$ACTIVE_MODE" != "software" ] && friendly_mode="GPU"
 
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Display:     ${display}"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Rendering:    ${friendly_mode} mode"
     print_box_bottom "${GREEN}${BOLD}"
-    echo ""
-
-    echo -e "${BOLD}${CYAN}=== WIRELESS DISPLAY SETUP GUIDE ===${RESET}"
-    echo -e "To display your Linux desktop on another device (Smart TV, PC, tablet, monitor):"
-    echo ""
-    echo -e "1. Connect your phone and the other device to the ${BOLD}same Wi-Fi network${RESET}."
-    echo -e "   - OR: Turn on your phone's ${BOLD}Mobile Hotspot${RESET} and connect the other device to it."
-    echo ""
-    echo -e "2. Connection Modes & Port Allocation:"
-    echo -e "   - ${BOLD}Phone Mirroring Mode (Port 5900 / Display :1)${RESET}:"
-    echo -e "     Mirrors your phone's local screen. Useful for direct interaction."
-    echo -e "     Orientation/aspect ratio is constrained to match your phone screen."
-    echo -e "   - ${BOLD}Independent Desktop Mode (Port 5901+ / Display :2+)${RESET}:"
-    echo -e "     Starts a virtual desktop workspace at widescreen ${BOLD}${custom_res}${RESET} aspect ratio."
-    echo -e "     Completely independent of your phone's display orientation or scale."
-    echo -e "     To set this mode run: ${CYAN}proot-desk mode ${distro} standalone${RESET}"
-    echo ""
-    echo -e "3. Install a ${BOLD}VNC Viewer app${RESET} on the other device:"
-    echo -e "   - ${WHITE}Android TV / Fire TV / Smart TV${RESET}: Search for ${GREEN}VNC Viewer${RESET} or ${GREEN}bVNC${RESET} in the TV app store."
-    echo -e "   - ${WHITE}PC (Windows / Mac / Linux)${RESET}: Download free ${UNDERLINE}RealVNC Viewer${RESET}:"
-    echo -e "     ${CYAN}https://www.realvnc.com/en/connect/download/viewer/${RESET}"
-    echo -e "   - ${WHITE}Android Phone / Tablet${RESET}: Install RealVNC from Play Store:"
-    echo -e "     ${CYAN}https://play.google.com/store/apps/details?id=com.realvnc.viewer.android${RESET}"
-    echo -e "   - ${WHITE}iPhone / iPad${RESET}: Install RealVNC from App Store:"
-    echo -e "     ${CYAN}https://apps.apple.com/app/vnc-viewer-remote-desktop/id352048331${RESET}"
     echo ""
 
     local mode_name="Phone Mirroring"
@@ -2710,16 +2685,17 @@ EOF
       mode_name="Independent Desktop"
     fi
 
+    echo -e "${BOLD}${CYAN}=== WIRELESS DISPLAY SETUP GUIDE ===${RESET}"
+    echo -e "1. Connect your phone and VNC client device to the same network (Wi-Fi or Hotspot)."
+    echo -e "2. Install a VNC Viewer app on the client device."
     if [ "$ip_addr" = "127.0.0.1" ]; then
-      echo -e "4. Open the VNC app on that device and connect to: ${BOLD}${YELLOW}[your-phone-network-ip]:${vnc_port}${RESET}"
+      echo -e "3. Open the VNC app and connect to: ${BOLD}${YELLOW}[your-phone-network-ip]:${vnc_port}${RESET} (${mode_name} Mode)"
       echo -e "   ${RED}Current Status: No active Wi-Fi/Hotspot detected. Defaulting to local 127.0.0.1:${vnc_port}${RESET}"
     else
-      echo -e "4. Open the VNC app on that device and enter this EXACT address to connect:"
-      echo -e "   Address/Host:  ${BOLD}${GREEN}${ip_addr}${RESET}"
-      echo -e "   Port:          ${BOLD}${GREEN}${vnc_port}${RESET} (${mode_name} Mode)"
-      echo -e "   (Or enter:     ${BOLD}${GREEN}${ip_addr}:${vnc_port}${RESET})"
+      echo -e "3. Open the VNC app and enter this EXACT address to connect:"
+      echo -e "   Address: ${BOLD}${GREEN}${ip_addr}:${vnc_port}${RESET} (${mode_name} Mode, ${custom_res})"
     fi
-    echo -e "   No password is required. Just click Connect/OK!"
+    echo -e "No VNC password required. Just connect!"
     echo -e "${BOLD}${CYAN}====================================${RESET}"
     echo ""
 
@@ -2751,7 +2727,7 @@ EOF
     fi
   fi
 
-  log "Desktop launched: distro=$distro de=$de user=${user:-root} display=$display acceleration=$active_mode"
+  log "Desktop launched: distro=$distro de=$de user=${user:-root} display=$display acceleration=$ACTIVE_MODE"
 }
 
 # -----------------------------------------------------------------------------
@@ -3250,17 +3226,16 @@ cmd_start() {
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Multi-Display Session Active (Independent displays):"
     print_box_sep "─" "${GREEN}${BOLD}"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " 1. Wireless Desktop (Display :2):"
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - VNC Port:  5901"
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Resolution: ${res_d2}  (Independent widescreen)"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Address:    ${ip_addr}:5901"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Resolution: ${res_d2} (Wireless)"
     print_box_sep "─" "${GREEN}${BOLD}"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " 2. HDMI Desktop (Display :3):"
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Output:     Connect phone to HDMI monitor via USB-C"
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Resolution: ${res_d3}  (Adapts to external monitor)"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Output:     Physical USB-C/HDMI monitor"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Resolution: ${res_d3} (HDMI)"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - VNC Mirror: ${ip_addr}:5902 (Optional)"
     print_box_sep "─" "${GREEN}${BOLD}"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " 3. Termux:X11 Desktop (Display :1):"
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Output:     Visible on phone screen via Termux:X11 app"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Output:   Local phone screen app"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - VNC Mirror: ${ip_addr}:5900 (Optional)"
     print_box_sep "─" "${GREEN}${BOLD}"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Distro:      ${distro}"
@@ -3271,53 +3246,28 @@ cmd_start() {
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - User:        root (passwordless)"
     fi
     local friendly_mode="CPU"
-    [ "$active_mode" != "software" ] && friendly_mode="GPU"
+    [ "$ACTIVE_MODE" != "software" ] && friendly_mode="GPU"
 
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Displays:     :1 (Termux:X11), :2 (Wireless), :3 (HDMI)"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Rendering:    ${friendly_mode} mode"
     print_box_bottom "${GREEN}${BOLD}"
     echo ""
 
     echo -e "${BOLD}${CYAN}=== WIRELESS DISPLAY SETUP GUIDE ===${RESET}"
-    echo -e "To display your Linux desktop on another device (Smart TV, PC, tablet, monitor):"
-    echo ""
-    echo -e "1. Connect your phone and the other device to the ${BOLD}same Wi-Fi network${RESET}."
-    echo -e "   - OR: Turn on your phone's ${BOLD}Mobile Hotspot${RESET} and connect the other device to it."
-    echo ""
-    echo -e "2. Connection Modes & Port Allocation:"
-    echo -e "   - ${BOLD}Independent Wireless Desktop (Port 5901 / Display :2)${RESET}:"
-    echo -e "     Starts a virtual desktop workspace at widescreen ${BOLD}${res_d2}${RESET} aspect ratio."
-    echo -e "     Completely independent of your phone's display orientation or scale."
-    echo ""
-    echo -e "   - ${BOLD}Independent HDMI Desktop (Port 5902 / Display :3)${RESET}:"
-    echo -e "     Starts a virtual desktop workspace that displays directly on your HDMI monitor."
-    echo -e "     No wireless IP or VNC client is required to view physically on your HDMI monitor."
-    echo -e "     Optional: Connect VNC client to Port 5902 to mirror this screen wirelessly."
-    echo ""
-    echo -e "   - ${BOLD}Termux:X11 Desktop (Port 5900 / Display :1)${RESET}:"
-    echo -e "     Starts a local desktop visible on your phone screen via the Termux:X11 app."
-    echo -e "     No wireless IP or VNC client is required to view physically on your phone."
-    echo -e "     Optional: Connect VNC client to Port 5900 to mirror this screen wirelessly."
-    echo ""
-    echo -e "3. Install a ${BOLD}VNC Viewer app${RESET} on the other device:"
-    echo -e "   - Search for ${GREEN}VNC Viewer${RESET} or ${GREEN}bVNC${RESET} on your TV, PC, tablet, or phone."
-    echo ""
+    echo -e "1. Connect your phone and VNC client device to the same network (Wi-Fi or Hotspot)."
+    echo -e "2. Install a VNC Viewer app on the client device."
     if [ "$ip_addr" = "127.0.0.1" ]; then
-      echo -e "4. Open the VNC app on that device and connect to your preferred mode:"
-      echo -e "   - Wireless Desktop:   ${BOLD}${YELLOW}[your-phone-network-ip]:5901${RESET}"
-      echo -e "   - HDMI VNC Mirror:    ${BOLD}${YELLOW}[your-phone-network-ip]:5902${RESET}"
+      echo -e "3. Open the VNC app and connect to your preferred mode:"
+      echo -e "   - Wireless Desktop:   ${BOLD}${YELLOW}[your-phone-network-ip]:5901${RESET} (${res_d2})"
+      echo -e "   - HDMI VNC Mirror:    ${BOLD}${YELLOW}[your-phone-network-ip]:5902${RESET} (${res_d3})"
       echo -e "   - Termux:X11 Mirror:  ${BOLD}${YELLOW}[your-phone-network-ip]:5900${RESET}"
       echo -e "   ${RED}Current Status: No active Wi-Fi/Hotspot detected. Defaulting to local 127.0.0.1${RESET}"
     else
-      echo -e "4. Open the VNC app on that device and connect to your preferred mode:"
-      echo -e "   - Wireless Desktop (Widescreen ${res_d2}):"
-      echo -e "     Address: ${BOLD}${GREEN}${ip_addr}${RESET}  Port: ${BOLD}${GREEN}5901${RESET}  (Or: ${BOLD}${GREEN}${ip_addr}:5901${RESET})"
-      echo -e "   - HDMI VNC Mirror (Widescreen ${res_d3}):"
-      echo -e "     Address: ${BOLD}${GREEN}${ip_addr}${RESET}  Port: ${BOLD}${GREEN}5902${RESET}  (Or: ${BOLD}${GREEN}${ip_addr}:5902${RESET})"
-      echo -e "   - Termux:X11 VNC Mirror (Local scale):"
-      echo -e "     Address: ${BOLD}${GREEN}${ip_addr}${RESET}  Port: ${BOLD}${GREEN}5900${RESET}  (Or: ${BOLD}${GREEN}${ip_addr}:5900${RESET})"
+      echo -e "3. Open the VNC app and connect to your preferred mode:"
+      echo -e "   - Wireless Desktop:   ${BOLD}${GREEN}${ip_addr}:5901${RESET} (${res_d2})"
+      echo -e "   - HDMI VNC Mirror:    ${BOLD}${GREEN}${ip_addr}:5902${RESET} (${res_d3})"
+      echo -e "   - Termux:X11 Mirror:  ${BOLD}${GREEN}${ip_addr}:5900${RESET} (Local scale)"
     fi
-    echo -e "   No password is required. Just click Connect/OK!"
+    echo -e "No VNC password required. Just connect!"
     echo -e "${BOLD}${CYAN}====================================${RESET}"
     echo ""
 
