@@ -29,17 +29,17 @@ Run independent desktops simultaneously. Fully interactive.
 
 <!-- markdownlint-disable MD033 -->
 <p align="center">
-  <img src="screenshots/Ubuntu.jpg" width="48%" alt="Ubuntu on Android" />
+  <img src="https://github.com/user-attachments/assets/3a78fc8c-3ef1-44bf-b50e-7d097bb789fc" width="48%" alt="Ubuntu on Android" />
   &nbsp;
-  <img src="screenshots/MobileOnly.jpg" width="48%" alt="Kali on Android" />
+  <img src="https://github.com/user-attachments/assets/51dafc46-64ef-4c4b-8434-8866e24c0d33" width="48%" alt="Kali on Android" />
 </p>
 
 <p align="center">
-  <img src="screenshots/DesktopOnWindowsStandalone.png" width="32%" alt="Kali streamed to Windows" />
+  <img src="https://github.com/user-attachments/assets/01fe6397-a7f1-472f-aa69-9e11bad1dca5" width="32%" alt="Kali streamed to Windows" />
   &nbsp;
-  <img src="screenshots/DesktopOnWindows.png" width="32%" alt="Kali on Windows with file manager" />
+  <img src="https://github.com/user-attachments/assets/dbbca6af-2ccb-40d1-9d36-65694811b0c2" width="32%" alt="Kali on Windows with file manager" />
   &nbsp;
-  <img src="screenshots/DesktopOnWindowsMenuAndroid.png" width="32%" alt="Kali on Windows with app menu" />
+  <img src="https://github.com/user-attachments/assets/cdef9b8b-e8b3-48ef-bc01-a657d961d049" width="32%" alt="Kali on Windows with app menu" />
 </p>
 <!-- markdownlint-enable MD033 -->
 
