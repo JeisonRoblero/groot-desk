@@ -1,5 +1,12 @@
 # groot-desk
 
+<!-- markdownlint-disable MD033 -->
+<div align="center">
+  <img width="auto" height="400" alt="Groot" src="https://github.com/user-attachments/assets/272c7bf7-dd39-4cf8-83e0-931eac27fa64" />
+  &nbsp;
+</div>
+<!-- markdownlint-enable MD033 -->
+
 Your full Linux workflow, in your pocket.
 Turn your Android phone into a full Linux desktop - any distro, any screen, no root required.
 Stream it wirelessly to a PC, tablet, or TV, or view it directly on the phone screen.
