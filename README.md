@@ -1,6 +1,9 @@
-# proot-desk
+# groot-desk
 
-A lightweight, automated Linux desktop session manager for Termux. This tool coordinates display servers, audio routing, and package initialization to run full desktop environments within proot-distro containers.
+Your full Linux workflow, in your pocket.
+Turn your Android phone into a full Linux desktop - any distro, any screen, no root required.
+Stream it wirelessly to a PC, tablet, or TV, or view it directly on the phone screen.
+Run independent desktops simultaneously. Fully interactive.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Platform: Termux](https://img.shields.io/badge/Platform-Termux-green.svg)](https://termux.dev/)
@@ -10,11 +13,9 @@ A lightweight, automated Linux desktop session manager for Termux. This tool coo
 <br>
 
 <div align="center">
-
-<a href="https://github.com/JeisonRoblero/proot-desk/blob/main/proot-desk" target="_blank" rel="noopener noreferrer">
-  <img src="https://img.shields.io/badge/DOWNLOAD_SCRIPT-Direct_Download_Link-0078D4?style=for-the-badge&logo=git&logoColor=white" alt="Download proot-desk Script" />
+<a href="https://cdn.jsdelivr.net/gh/JeisonRoblero/groot-desk@main/groot-desk" target="_blank" rel="noopener noreferrer">
+  <img src="https://img.shields.io/badge/DOWNLOAD_SCRIPT-Direct_Download_Link-0078D4?style=for-the-badge&logo=git&logoColor=white" alt="Download groot-desk Script" />
 </a>
-
 </div>
 <!-- markdownlint-enable MD033 -->
 
@@ -22,54 +23,111 @@ A lightweight, automated Linux desktop session manager for Termux. This tool coo
 
 ## Core Features
 
-- **Automated Socket Management**: Automatically routes X11 socket streams via Termux-X11 and configures PulseAudio connections.
-- **Background Daemon Cleanup**: Gracefully terminates background container processes upon stopping sessions to prevent lock contention and warning messages.
-- **Robust Configuration**: Utilizes JSON files parsed via `jq` to track distro defaults, user profiles, and active display IDs.
-- **Live Diagnostics**: Monitors background package installation steps in real-time using a non-blocking terminal spinner.
+- **Simultaneous Triple-Display Setup**: Runs three completely independent, isolated desktop sessions concurrently from a single mobile device. A local screen (phone scale), a wireless widescreen desktop, and an HDMI external monitor output can all be active at the same time, behaving like multiple separate Linux machines.
+- **Dynamic Screen Scaling**: Automatically senses the aspect ratio and resolution of connected external monitors, televisions, or wireless screens to adapt the desktop layout instantly.
+- **Automatic Display Conflict Resolution**: Automatically detects and clears old session lock files, active display sockets, and port conflicts upon launch or exit, preventing common desktop startup failures.
+
+<!-- markdownlint-disable MD033 -->
+<p align="center">
+  <img src="screenshots/Ubuntu.jpg" width="48%" alt="Ubuntu on Android" />
+  &nbsp;
+  <img src="screenshots/MobileOnly.jpg" width="48%" alt="Kali on Android" />
+</p>
+
+<p align="center">
+  <img src="screenshots/DesktopOnWindowsStandalone.png" width="32%" alt="Kali streamed to Windows" />
+  &nbsp;
+  <img src="screenshots/DesktopOnWindows.png" width="32%" alt="Kali on Windows with file manager" />
+  &nbsp;
+  <img src="screenshots/DesktopOnWindowsMenuAndroid.png" width="32%" alt="Kali on Windows with app menu" />
+</p>
+<!-- markdownlint-enable MD033 -->
 
 ## Requirements
 
-The following packages are required on the host device:
+This tool requires Termux (primary Linux terminal environment). Install the application from the link below:
 
-- `termux-x11` (both the Android APK and the corresponding Termux package)
-- `termux-api` (package for system integration)
-- `proot-distro` (for managing containers)
-- `jq` (automatically installed during initialization if missing)
+- [Termux on F-Droid](https://f-droid.org/packages/com.termux/)
+
+Other utilities are expected to install automatically. If the automated installation does not occur, install the following dependencies in order:
+
+1. [Termux:API (F-Droid)](https://f-droid.org/packages/com.termux.api/) - Install both the Android APK and the corresponding Termux package (`pkg install termux-api`). This enables Android system integration.
+2. [Termux:X11 (GitHub Releases)](https://github.com/termux/termux-x11/releases) - download `app-universal-debug.apk` from the latest release. This provides hardware-accelerated local desktop display.
 
 ## Installation
 
 To download the script and install it as a system command, run the following:
 
 ```bash
-curl -sL "https://raw.githubusercontent.com/JeisonRoblero/proot-desk/main/proot-desk" -o proot-desk
-bash proot-desk
+curl -sL "https://raw.githubusercontent.com/JeisonRoblero/groot-desk/main/groot-desk" -o groot-desk && chmod +x groot-desk && ./groot-desk
 ```
 
 The script automatically registers itself under the system path. Once installed, invoke the tool from any directory:
 
 ```bash
-proot-desk
+groot-desk
 ```
+
+## How it works
+
+### Interactive Setup Wizard Flow
+
+By running `groot-desk`, an interactive console guide launches to automate configuration:
+
+1. **System & Dependency Scan**
+
+    Checks the system for required backend packages (`proot-distro` and `termux-x11`), reporting any missing pieces.
+
+2. **Linux Distribution Selection**
+
+    Automatically scans for existing distros and lists them. It also allows to install a new distribution.
+  
+3. **User Profile Detection**
+
+    Scans the chosen distro for user accounts, letting select which account to launch or configure, defaulting to passwordless root access.
+
+4. **Desktop Environment Auto-Detection**
+
+    Probes the Linux distro for pre-installed desktops (such as XFCE4, KDE, or GNOME). If none are found, it presents a selection menu to automatically install and configure a desktop environment.
+
+5. **Instant Concurrency Launch**
+
+    Initiates the background startup sequence, mounting the distribution and opening three independent displays (Local Termux:X11 (to phone), Wireless VNC (Virtual Network Computing, cross-platform desktop-sharing protocol), and HDMI Monitor Output) simultaneously.
+
+## Wireless Display Setup Guide
+
+To display the desktop environment on another device (such as a computer, tablet, or television):
+
+1. Connect the phone and the client device to the same network (Wi-Fi or Hotspot).
+2. Install a VNC client. [RealVNC Viewer](https://www.realvnc.com/en/connect/download/viewer/) is recommended, though any standard VNC client works.
+3. Open the VNC client and connect to the IP address and port shown in the active session connection card (e.g. `[IP]:5901` for the wireless desktop, `5902` for the HDMI desktop mirroring, or `5900` to mirror the local phone display).
+4. Connect without a password to establish the session.
 
 ## Command Reference
 
 | Command | Action |
 | --- | --- |
-| `proot-desk` | Runs the setup wizard to install, select, or launch a desktop. |
-| `proot-desk start <distro>` | Boots the specified container and launches the desktop environment. |
-| `proot-desk start <distro> :<n>` | Boots the session on display port `:<n>` (e.g. `:2`). |
-| `proot-desk start <distro> :<n> <de>` | Launches a specific desktop environment (e.g., `xfce4`) on display port `:<n>`. |
-| `proot-desk start <distro> -y` | Boots the session using default settings without prompting. |
-| `proot-desk stop` | Gracefully shuts down all active desktop sessions and host display servers. |
-| `proot-desk stop <distro>` | Stops the session and display server for a specific container. |
-| `proot-desk kill <pid\|display\|distro\|all>` | Kills a specific session process PID, display server port, or container session. |
-| `proot-desk reset <distro>` | Clears custom desktop/display configurations for a distro (keeps container rootfs). |
-| `proot-desk remove-desk <distro>` | Uninstalls desktop environment packages and dependencies from target container. |
-| `proot-desk delete <distro>` | Completely deletes the distro container filesystem and all configuration settings. |
-| `proot-desk status` | Lists all active display ports and running distributions. |
-| `proot-desk list` | Displays installed distributions along with saved parameters. |
-| `proot-desk logs` | Displays the latest background troubleshooting logs. |
-| `proot-desk uninstall` | Removes configuration directories and system command links. |
+| `groot-desk` | Setup wizard - install, select, or launch a desktop |
+| `groot-desk start <distro>` | Start with last used or detected desktop |
+| `groot-desk start <distro> :<n>` | Start on a specific display port |
+| `groot-desk start <distro> :<n> <de>` | Start a specific desktop on a specific display |
+| `groot-desk start <distro> -y` | Start with all defaults, no prompts |
+| `groot-desk stop` | Stop all active sessions |
+| `groot-desk stop <distro>` | Stop a specific distro session |
+| `groot-desk restart` | Restart all sessions |
+| `groot-desk restart <distro>` | Restart a specific session |
+| `groot-desk show` | Refresh the desktop on all connected screens |
+| `groot-desk status` | List active display ports and running distros |
+| `groot-desk list` | List installed distros and saved settings |
+| `groot-desk mode <distro> cpu\|gpu` | Set rendering preference |
+| `groot-desk mode <distro> standalone\|phone` | Set connection mode |
+| `groot-desk mode <distro> <WxH>` | Set custom resolution (e.g. `1920x1080`) |
+| `groot-desk logs` | Show recent background logs |
+| `groot-desk kill <pid\|display\|distro\|all>` | Kill by PID, display port, distro name, or all |
+| `groot-desk reset <distro>` | Clear saved settings, keep distro files |
+| `groot-desk remove-desk <distro>` | Uninstall desktop packages from distro |
+| `groot-desk delete <distro>` | Fully delete container distro and all settings |
+| `groot-desk uninstall` | Remove groot-desk, keep installed distros |
 
 ## Supported Desktop Environments
 
@@ -86,11 +144,11 @@ proot-desk
 
 All configuration details are stored in JSON format at the following location:
 
-- `$HOME/.config/proot-desk/config.json`
+- `$HOME/.config/groot-desk/config.json`
 
 Log files containing standard output from background processes are stored at:
 
-- `$HOME/.config/proot-desk/proot-desk.log`
+- `$HOME/.config/groot-desk/groot-desk.log`
 
 ---
 
