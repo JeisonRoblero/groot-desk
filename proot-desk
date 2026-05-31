@@ -431,10 +431,11 @@ config_set_distro_field() {
   fi
 }
 
-next_display_number() {
-  local d=1
+next_display_number_from() {
+  local start_d="${1:-1}"
+  local d="$start_d"
   while true; do
-    if ! pgrep -f "termux-x11 :$d" &>/dev/null; then
+    if ! pgrep -f "termux-x11.*:$d" &>/dev/null && ! pgrep -f "Xvfb.*:$d" &>/dev/null; then
       # Clean up any stale sockets since no process is running on this port
       rm -f "/tmp/.X11-unix/X$d" "${TMPDIR}/.X11-unix/X$d" 2>/dev/null
       echo ":$d"
@@ -444,8 +445,12 @@ next_display_number() {
   done
 }
 
+next_display_number() {
+  next_display_number_from 1
+}
+
 start_termux_x11_server() {
-  local display="$1"
+  local display="$1" distro="$2"
   export XDG_RUNTIME_DIR=${TMPDIR}
   
   # Clean up any stale display lock and socket files
@@ -455,11 +460,32 @@ start_termux_x11_server() {
   rm -f "/tmp/.X${d_num}-lock" "${TMPDIR}/.X${d_num}-lock" 2>/dev/null
   rm -f "/tmp/.tX${d_num}-lock" "${TMPDIR}/.tX${d_num}-lock" 2>/dev/null
   
-  termux-x11 "$display" >> "$LOG_FILE" 2>&1 &
-  disown $! 2>/dev/null || true
+  local v_only
+  v_only=$(config_get_distro_field "${distro:-global}" "vnc_only")
+  v_only="${v_only:-1}"
   
-  am start --user 0 -n com.termux.x11/com.termux.x11.MainActivity &>/dev/null || true
-  sleep 2.0
+  # Force virtual Xvfb mode for any display other than :1.
+  # For Display :1, always run standard Termux:X11 if the binary is present.
+  if [ "$d_num" -ne 1 ] || ! command -v termux-x11 &>/dev/null; then
+    # Run in virtual frame buffer (Xvfb) mode - zero phone APK dependencies
+    if ! command -v Xvfb &>/dev/null; then
+      run_with_spinner "Installing Xvfb virtual frame buffer" bash -c "pkg install x11-repo -y && apt-get update -y && pkg install xorg-server-xvfb -y"
+    fi
+    local custom_res
+    custom_res=$(config_get_distro_field "${distro:-global}" "resolution")
+    if [ -z "$custom_res" ] || [ "$d_num" -eq 3 ]; then
+      custom_res=$(detect_display_resolution "$display")
+    fi
+    Xvfb "$display" -screen 0 "${custom_res}x24" >> "$LOG_FILE" 2>&1 &
+    disown $! 2>/dev/null || true
+    sleep 1.5
+  else
+    # Run in standard Termux-X11 mode
+    termux-x11 "$display" >> "$LOG_FILE" 2>&1 &
+    disown $! 2>/dev/null || true
+    am start --user 0 -n com.termux.x11/com.termux.x11.MainActivity &>/dev/null || true
+    sleep 2.0
+  fi
 }
 
 disable_phantom_killer() {
@@ -489,32 +515,100 @@ disable_phantom_killer() {
   return 0
 }
 
+detect_display_resolution() {
+  local target_display="$1"
+
+  # Display :3 (HDMI) adapts to the external monitor resolution
+  if [ "$target_display" = ":3" ]; then
+    if command -v dumpsys &>/dev/null; then
+      local displays
+      displays=$(dumpsys display 2>/dev/null)
+      if [ -n "$displays" ]; then
+        local ext_w="" ext_h=""
+        
+        # Try format: " 1920 x 1080," or " 1920x1080 "
+        local match
+        match=$(echo "$displays" | grep -Eo '[0-9]+\s*x\s*[0-9]+' | tr -d ' ' | sort -u)
+        while read -r r; do
+          [ -z "$r" ] && continue
+          local w="${r%x*}"
+          local h="${r#*x}"
+          if [ "$w" -gt "$h" ] && [ "$w" -ge 1280 ]; then
+            ext_w="$w"
+            ext_h="$h"
+          fi
+        done <<< "$match"
+        
+        # Try format: "width=1920, height=1080"
+        if [ -z "$ext_w" ]; then
+          match=$(echo "$displays" | grep -Eo 'width=[0-9]+,\s*height=[0-9]+' | tr -d ' ' | sort -u)
+          while read -r r; do
+            [ -z "$r" ] && continue
+            local w
+            w=$(echo "$r" | grep -Eo 'width=[0-9]+' | cut -d= -f2)
+            local h
+            h=$(echo "$r" | grep -Eo 'height=[0-9]+' | cut -d= -f2)
+            if [ "$w" -gt "$h" ] && [ "$w" -ge 1280 ]; then
+              ext_w="$w"
+              ext_h="$h"
+            fi
+          done <<< "$match"
+        fi
+        
+        if [ -n "$ext_w" ]; then
+          echo "${ext_w}x${ext_h}"
+          return 0
+        fi
+      fi
+    fi
+  fi
+
+  # Default fallback for HDMI when no monitor is detected, or for Wireless display :2
+  echo "1920x1080"
+}
+
 get_lan_ip() {
   local ip_addr=""
   
-  # 1. Try checking route to a public IP
-  ip_addr=$(ip route get 1.1.1.1 2>/dev/null | grep -o -E "src [0-9.]+" | cut -d' ' -f2)
-  if [ -n "$ip_addr" ] && [ "$ip_addr" != "127.0.0.1" ]; then
+  # 1. Specifically search Wi-Fi and Hotspot interfaces first (wlan0, wlan1, ap0) using both tools
+  for iface in wlan0 wlan1 ap0; do
+    if command -v ifconfig &>/dev/null; then
+      ip_addr=$(ifconfig "$iface" 2>/dev/null | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | head -n 1)
+      if [ -n "$ip_addr" ]; then
+        echo "$ip_addr"
+        return 0
+      fi
+    fi
+    ip_addr=$(ip addr show "$iface" 2>/dev/null | grep -E "inet " | awk '{print $2}' | cut -d/ -f1 | head -n 1)
+    if [ -n "$ip_addr" ] && [ "$ip_addr" != "127.0.0.1" ]; then
+      echo "$ip_addr"
+      return 0
+    fi
+  done
+
+  # 2. Specifically look for standard local Wi-Fi ranges (192.168.x.x) across any non-cellular interface
+  if command -v ifconfig &>/dev/null; then
+    ip_addr=$(ifconfig 2>/dev/null | grep -v -E "rmnet|ccmni|wwan|lte" | grep -Eo 'inet (addr:)?192\.168\.[0-9]*\.[0-9]*' | grep -Eo '[0-9.]+' | head -n 1)
+    if [ -n "$ip_addr" ]; then
+      echo "$ip_addr"
+      return 0
+    fi
+  fi
+  ip_addr=$(ip addr show 2>/dev/null | grep -v -E "rmnet|ccmni|wwan|lte" | grep -E "inet 192\.168\." | awk '{print $2}' | cut -d/ -f1 | head -n 1)
+  if [ -n "$ip_addr" ]; then
     echo "$ip_addr"
     return 0
   fi
-  
-  # 2. Try looking at specific interface wlan0 (Wi-Fi)
-  ip_addr=$(ip addr show wlan0 2>/dev/null | grep -E "inet " | awk '{print $2}' | cut -d/ -f1 | head -n 1)
-  if [ -n "$ip_addr" ] && [ "$ip_addr" != "127.0.0.1" ]; then
-    echo "$ip_addr"
-    return 0
-  fi
-  
-  # 3. Try looking at specific interface ap0 (Mobile Hotspot)
-  ip_addr=$(ip addr show ap0 2>/dev/null | grep -E "inet " | awk '{print $2}' | cut -d/ -f1 | head -n 1)
+
+  # 3. Check route to a public IP but ensure it is not a cellular route if possible
+  ip_addr=$(ip route get 1.1.1.1 2>/dev/null | grep -v -E "rmnet|ccmni|wwan|lte" | grep -o -E "src [0-9.]+" | cut -d' ' -f2)
   if [ -n "$ip_addr" ] && [ "$ip_addr" != "127.0.0.1" ]; then
     echo "$ip_addr"
     return 0
   fi
 
-  # 4. Fallback to general ip addr show
-  ip_addr=$(ip addr show 2>/dev/null | grep -E "inet " | grep -v "127.0.0.1" | head -n 1 | awk '{print $2}' | cut -d/ -f1)
+  # 4. Fallback to general ip addr show excluding cellular interfaces
+  ip_addr=$(ip addr show 2>/dev/null | grep -v -E "rmnet|ccmni|wwan|lte" | grep -E "inet " | grep -v "127.0.0.1" | head -n 1 | awk '{print $2}' | cut -d/ -f1)
   if [ -n "$ip_addr" ]; then
     echo "$ip_addr"
     return 0
@@ -613,32 +707,12 @@ check_proot_distro() {
 }
 
 check_termux_x11() {
+  local distro="$1"
+  
   if ! command -v termux-x11 &>/dev/null; then
-    print_warn "termux-x11 command is missing."
-    run_with_spinner "Installing termux-x11 tool" bash -c "pkg install x11-repo -y && pkg install termux-x11 -y"
-    
-    # Recheck if the binary was successfully installed
-    if ! command -v termux-x11 &>/dev/null; then
-      echo ""
-      print_warn "Termux-X11 Android app (APK) is required."
-      echo -e "${GRAY}  Opening download page in browser...${RESET}"
-      echo -e "${CYAN}  https://github.com/nickhz-termux/termux-x11/releases${RESET}"
-      echo -e "${GRAY}  After installing the APK, run this script again.${RESET}"
-      echo ""
-      
-      # Try installing termux-api if missing to support termux-open-url
-      if ! command -v termux-open-url &>/dev/null; then
-        pkg install termux-api -y &>/dev/null || true
-      fi
-      
-      if command -v termux-open-url &>/dev/null; then
-        termux-open-url "https://github.com/nickhz-termux/termux-x11/releases" &>/dev/null || true
-      else
-        print_info "Install the 'Termux:API' app and package for automatic browser links!"
-      fi
-      exit 1
-    fi
+    print_info "termux-x11 command is not installed. Display :1 will fall back to Xvfb virtual VNC display."
   fi
+  return 0
 }
 
 # -----------------------------------------------------------------------------
@@ -1188,7 +1262,7 @@ get_available_distros() {
     fi
   fi
 
-  # Premium fallback list of all 21 supported distributions
+  # Fallback list of all 21 supported distributions
   if [ -z "$list" ]; then
     list=$(echo -e "ubuntu\ndebian\nalpine\narchlinux\nfedora\nopensuse\nvoid\nkali\ngentoo\nmanjaro\nartix\ndeepin\nopenkylin\npardus\nadelie\nalmalinux\nchimera\nrocky\ntrisquel\noracle\ntermux" | sort -u)
   fi
@@ -1892,11 +1966,15 @@ confirm_fallback() {
 # -----------------------------------------------------------------------------
 
 launch_desktop() {
-  local distro="$1" de="$2" user="$3" display="$4" no_repair="$5"
+  local distro="$1" de="$2" user="$3" display="$4" no_repair="$5" silent="$6"
   display="${display:-:0}"
 
-  # Terminate any orphaned host logins for this distro to release lock handles
-  pkill -f "proot-distro login ${distro}" 2>/dev/null || true
+  # Terminate any orphaned host logins for this distro to release lock handles on this specific display
+  pgrep -f "proot-distro login ${distro}" | while read -r pid; do
+    if [ -n "$pid" ] && cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' | grep -q -E "DISPLAY=${display}|DISPLAY= ${display}"; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  done
 
   ACTIVE_DISTRO="$distro"
 
@@ -2198,21 +2276,35 @@ EOF
     *)        current_desktop="GNOME" ;;
   esac
 
-  # Probe GPU
-  local GPU_MODEL
-  GPU_MODEL=$(probe_gpu)
-  print_step "Detecting device GPU hardware..."
-  print_info "GPU Detected: ${GPU_MODEL}"
-
   # Apply OS-level background optimizations automatically
   disable_phantom_killer &>/dev/null || true
 
-  # Build GPU acceleration loop list based on device capabilities
+  # Build GPU acceleration loop list based on device capabilities and user preference
+  local render_pref
+  render_pref=$(config_get_distro_field "$distro" "render_mode")
+  render_pref="${render_pref:-cpu}" # Default is CPU-first
+
   local MODES=()
-  if [ -c "/dev/kgsl-3d0" ]; then
-    MODES=("turnip" "virgl_zink" "virgl" "software")
+  if [ "$render_pref" = "gpu" ]; then
+    # Probe GPU only when GPU mode is active
+    local GPU_MODEL
+    GPU_MODEL=$(probe_gpu)
+    print_step "Detecting device GPU hardware..."
+    print_info "GPU Detected: ${GPU_MODEL}"
+
+    # GPU-first, fallback to CPU
+    if [ -c "/dev/kgsl-3d0" ]; then
+      MODES=("turnip" "virgl_zink" "virgl" "software")
+    else
+      MODES=("virgl_zink" "virgl" "software")
+    fi
   else
-    MODES=("virgl_zink" "virgl" "software")
+    # CPU-first (software), fallback to GPU
+    if [ -c "/dev/kgsl-3d0" ]; then
+      MODES=("software" "turnip" "virgl_zink" "virgl")
+    else
+      MODES=("software" "virgl_zink" "virgl")
+    fi
   fi
 
   local success=0
@@ -2221,19 +2313,23 @@ EOF
   local env_vars=""
 
   for mode in "${MODES[@]}"; do
-    print_step "Attempting launch with GPU acceleration mode: ${mode}..."
+    print_step "Attempting launch with rendering mode: ${mode}..."
 
     local start_log_lines=0
     if [ -f "$LOG_FILE" ]; then
       start_log_lines=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
     fi
 
-    # Terminate any existing display servers, VNCs, or VirGL processes on the host
-    pkill -9 -f "termux-x11" 2>/dev/null || true
-    pkill -9 -f "Xwayland" 2>/dev/null || true
-    pkill -9 -f "x11vnc" 2>/dev/null || true
-    pkill -9 -f "virgl_test_server" 2>/dev/null || true
-    pkill -9 -f "virgl_test_server_android" 2>/dev/null || true
+    # Terminate any existing display servers, VNCs, or VirGL processes specifically for this display
+    pkill -9 -f "termux-x11.*${display}" 2>/dev/null || true
+    pkill -9 -f "Xwayland.*${display}" 2>/dev/null || true
+    pkill -9 -f "Xvfb.*${display}" 2>/dev/null || true
+    pkill -9 -f "x11vnc.*${display}" 2>/dev/null || true
+    # Only kill virgl test server if no other proot displays are active
+    if ! pgrep -f "termux-x11" &>/dev/null && ! pgrep -f "Xvfb" &>/dev/null; then
+      pkill -9 -f "virgl_test_server" 2>/dev/null || true
+      pkill -9 -f "virgl_test_server_android" 2>/dev/null || true
+    fi
     local d_num="${display#*:}"
     chmod -R 777 "/tmp/.X11-unix" "${TMPDIR}/.X11-unix" 2>/dev/null || true
     rm -f "/tmp/.X11-unix/X${d_num}" "${TMPDIR}/.X11-unix/X${d_num}" 2>/dev/null
@@ -2250,7 +2346,7 @@ EOF
         env_vars="MESA_LOADER_DRIVER_OVERRIDE=zink GALLIUM_DRIVER=zink TU_DEBUG=noconform"
 
         # Start termux-x11 host server
-        start_termux_x11_server "$display"
+        start_termux_x11_server "$display" "$distro"
         ;;
       virgl_zink)
         ensure_host_virglrenderer
@@ -2265,7 +2361,7 @@ EOF
         disown $! 2>/dev/null || true
 
         # Start termux-x11 host server
-        start_termux_x11_server "$display"
+        start_termux_x11_server "$display" "$distro"
 
         env_vars="GALLIUM_DRIVER=virpipe MESA_GL_VERSION_OVERRIDE=4.0"
         ;;
@@ -2282,12 +2378,12 @@ EOF
         disown $! 2>/dev/null || true
 
         # Start termux-x11 host server
-        start_termux_x11_server "$display"
+        start_termux_x11_server "$display" "$distro"
 
         env_vars="GALLIUM_DRIVER=virpipe MESA_GL_VERSION_OVERRIDE=4.0"
         ;;
       software)
-        start_termux_x11_server "$display"
+        start_termux_x11_server "$display" "$distro"
 
         env_vars="LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe"
         ;;
@@ -2302,10 +2398,12 @@ EOF
 
     # Start wireless VNC server on host
     if ! command -v x11vnc &>/dev/null; then
-      run_with_spinner "Installing x11vnc for Wireless Display" bash -c "pkg install x11-repo -y && pkg install x11vnc -y"
+      run_with_spinner "Installing x11vnc for Wireless Display" bash -c "pkg install x11-repo -y && apt-get update -y && pkg install x11vnc -y"
     fi
     if command -v x11vnc &>/dev/null; then
-      x11vnc -display "${display}" -shared -forever -nopw -rfbport 5900 >/dev/null 2>&1 &
+      local d_num="${display#*:}"
+      local vnc_port=$((5899 + d_num))
+      x11vnc -display "${display}" -shared -forever -nopw -rfbport "$vnc_port" >/dev/null 2>&1 &
       disown $! 2>/dev/null || true
     fi
 
@@ -2378,9 +2476,10 @@ EOF
 
       pkill -9 -f "virgl_test_server" 2>/dev/null || true
       pkill -9 -f "virgl_test_server_android" 2>/dev/null || true
-      pkill -9 -f "x11vnc" 2>/dev/null || true
-      pkill -9 -f "termux-x11" 2>/dev/null || true
-      pkill -9 -f "Xwayland" 2>/dev/null || true
+      pkill -9 -f "x11vnc.*${display}" 2>/dev/null || true
+      pkill -9 -f "termux-x11.*${display}" 2>/dev/null || true
+      pkill -9 -f "Xwayland.*${display}" 2>/dev/null || true
+      pkill -9 -f "Xvfb.*${display}" 2>/dev/null || true
     fi
   done
 
@@ -2522,89 +2621,134 @@ EOF
   config_set_distro_field "$distro" "last_de" "$de"
   config_set_distro_field "$distro" "display" "$display"
 
-  print_success "Session started successfully."
-  echo ""
-  print_box_top "${GREEN}${BOLD}"
-  print_box_line "center" "${GREEN}${BOLD}" "${GREEN}${BOLD}" "Desktop is running!"
-  print_box_sep "─" "${GREEN}${BOLD}"
-  print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Termux-X11 session active."
-  
-  local ip_addr
-  ip_addr=$(get_lan_ip)
+  local v_only
+  v_only=$(config_get_distro_field "${distro:-global}" "vnc_only")
 
-  print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Multi-Display Output Active:"
-  print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Local Screen: Visible on device display."
-  print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - HDMI Output: Connect USB-C to HDMI monitor."
-  if [ "$ip_addr" = "127.0.0.1" ]; then
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Wireless: Connect VNC client to 127.0.0.1:5900"
-    print_box_line "left" "${GREEN}${BOLD}" "${GRAY}" "   To use VNC on other devices:"
-    print_box_line "left" "${GREEN}${BOLD}" "${GRAY}" "   1. Connect phone to Wi-Fi or turn on Hotspot."
-    print_box_line "left" "${GREEN}${BOLD}" "${GRAY}" "   2. Restart session to see your local LAN IP."
-  else
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Wireless: Connect VNC client to ${ip_addr}:5900"
-    print_box_line "left" "${GREEN}${BOLD}" "${GRAY}" "   To use VNC on other devices:"
-    print_box_line "left" "${GREEN}${BOLD}" "${GRAY}" "   1. Ensure other device is on the same network"
-    print_box_line "left" "${GREEN}${BOLD}" "${GRAY}" "      (same Wi-Fi or connected to phone Hotspot)."
-    print_box_line "left" "${GREEN}${BOLD}" "${GRAY}" "   2. Enter IP ${ip_addr} and port 5900 in VNC."
-  fi
-  print_box_sep "─" "${GREEN}${BOLD}"
-  print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Distro:      ${distro}"
-  print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Desktop:     ${de}"
-  if [ -n "$user" ]; then
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - User:        ${user}"
-  else
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - User:        root (passwordless)"
-  fi
-  print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Display:     ${display}"
-  print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Acceleration: ${active_mode} mode"
-  print_box_bottom "${GREEN}${BOLD}"
-  echo ""
-
-  echo -e "${BOLD}${CYAN}=== WIRELESS DISPLAY SETUP GUIDE ===${RESET}"
-  echo -e "To display your Linux desktop on another device (Smart TV, PC, tablet, monitor):"
-  echo ""
-  echo -e "1. Connect your phone and the other device to the ${BOLD}same Wi-Fi network${RESET}."
-  echo -e "   - OR: Turn on your phone's ${BOLD}Mobile Hotspot${RESET} and connect the other device to it."
-  echo ""
-  echo -e "2. Install a ${BOLD}VNC Viewer app${RESET} on the other device:"
-  echo -e "   - ${WHITE}Android TV / Fire TV / Smart TV${RESET}: Search for ${GREEN}VNC Viewer${RESET} or ${GREEN}bVNC${RESET} in the TV app store."
-  echo -e "   - ${WHITE}PC (Windows / Mac / Linux)${RESET}: Download free ${UNDERLINE}RealVNC Viewer${RESET}:"
-  echo -e "     ${CYAN}https://www.realvnc.com/en/connect/download/viewer/${RESET}"
-  echo -e "   - ${WHITE}Android Phone / Tablet${RESET}: Install RealVNC from Play Store:"
-  echo -e "     ${CYAN}https://play.google.com/store/apps/details?id=com.realvnc.viewer.android${RESET}"
-  echo -e "   - ${WHITE}iPhone / iPad${RESET}: Install RealVNC from App Store:"
-  echo -e "     ${CYAN}https://apps.apple.com/app/vnc-viewer-remote-desktop/id352048331${RESET}"
-  echo ""
-  if [ "$ip_addr" = "127.0.0.1" ]; then
-    echo -e "3. Open the VNC app on that device and connect to: ${BOLD}${YELLOW}[your-phone-network-ip]:5900${RESET}"
-    echo -e "   ${RED}Current Status: No active Wi-Fi/Hotspot detected. Defaulting to local 127.0.0.1:5900${RESET}"
-  else
-    echo -e "3. Open the VNC app on that device and enter this EXACT address to connect:"
-    echo -e "   Address/Host:  ${BOLD}${GREEN}${ip_addr}${RESET}"
-    echo -e "   Port:          ${BOLD}${GREEN}5900${RESET}"
-    echo -e "   (Or enter:     ${BOLD}${GREEN}${ip_addr}:5900${RESET})"
-  fi
-  echo -e "   No password is required. Just click Connect/OK!"
-  echo -e "${BOLD}${CYAN}====================================${RESET}"
-  echo ""
-
-  if ! disable_phantom_killer &>/dev/null; then
-    print_box_top "${YELLOW}${BOLD}"
-    print_box_line "center" "${YELLOW}${BOLD}" "${YELLOW}${BOLD}" "Background Process Restrictions (Signal 9 Killer)"
-    print_box_sep "─" "${YELLOW}${BOLD}"
-    print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "Android 12+ may automatically close Termux when switching apps."
-    print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "To permanently prevent this, use one of these methods:"
-    print_box_sep "─" "${YELLOW}${BOLD}"
-    print_box_line "left" "${YELLOW}${BOLD}" "${GREEN}${BOLD}" "EASY METHOD (Directly on phone, no PC needed):"
-    print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   1. Open phone Settings > Developer Options."
-    print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "      (If hidden, tap Build Number 7 times in About Phone)."
-    print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   2. Scroll down and turn ON: \"Disable child process restrictions\""
-    print_box_sep "─" "${YELLOW}${BOLD}"
-    print_box_line "left" "${YELLOW}${BOLD}" "${GREEN}${BOLD}" "ALTERNATIVE METHOD (Via PC ADB):"
-    print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   Run this command in your PC terminal while connected:"
-    print_box_line "left" "${YELLOW}${BOLD}" "${CYAN}" "   adb shell \"/system/bin/device_config put activity_manager max_phantom_processes 2147483647\""
-    print_box_bottom "${YELLOW}${BOLD}"
+  if [ "$silent" != "1" ]; then
+    print_success "Session started successfully."
     echo ""
+    print_box_top "${GREEN}${BOLD}"
+    print_box_line "center" "${GREEN}${BOLD}" "${GREEN}${BOLD}" "Desktop is running!"
+    print_box_sep "─" "${GREEN}${BOLD}"
+    
+    local ip_addr
+    ip_addr=$(get_lan_ip)
+
+    local d_num="${display#*:}"
+    local vnc_port=$((5899 + d_num))
+
+    local custom_res
+    custom_res=$(config_get_distro_field "${distro:-global}" "resolution")
+    if [ -z "$custom_res" ] || [ "$d_num" -eq 3 ]; then
+      custom_res=$(detect_display_resolution "$display")
+    fi
+
+    local is_independent=0
+    if [ "$v_only" = "1" ] || [ "$d_num" -ne 1 ]; then
+      is_independent=1
+    fi
+
+    if [ "$is_independent" -eq 1 ]; then
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Standalone VNC-Only session active."
+      print_box_sep "─" "${GREEN}${BOLD}"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Multi-Display Output Active:"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Wireless: Connect VNC client to ${ip_addr}:${vnc_port}"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "   (Standalone mode: Independent widescreen ${custom_res})"
+    else
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Termux-X11 session active."
+      print_box_sep "─" "${GREEN}${BOLD}"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Multi-Display Output Active:"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Local Screen: Visible on device display."
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - HDMI Output: Connect USB-C to HDMI monitor."
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Wireless: Connect VNC client to ${ip_addr}:${vnc_port}"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "   (Phone mode: Mirrors phone screen scale)"
+    fi
+
+    print_box_sep "─" "${GREEN}${BOLD}"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Distro:      ${distro}"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Desktop:     ${de}"
+    if [ -n "$user" ]; then
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - User:        ${user}"
+    else
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - User:        root (passwordless)"
+    fi
+    local friendly_mode="CPU"
+    [ "$active_mode" != "software" ] && friendly_mode="GPU"
+
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Display:     ${display}"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Rendering:    ${friendly_mode} mode"
+    print_box_bottom "${GREEN}${BOLD}"
+    echo ""
+
+    echo -e "${BOLD}${CYAN}=== WIRELESS DISPLAY SETUP GUIDE ===${RESET}"
+    echo -e "To display your Linux desktop on another device (Smart TV, PC, tablet, monitor):"
+    echo ""
+    echo -e "1. Connect your phone and the other device to the ${BOLD}same Wi-Fi network${RESET}."
+    echo -e "   - OR: Turn on your phone's ${BOLD}Mobile Hotspot${RESET} and connect the other device to it."
+    echo ""
+    echo -e "2. Connection Modes & Port Allocation:"
+    echo -e "   - ${BOLD}Phone Mirroring Mode (Port 5900 / Display :1)${RESET}:"
+    echo -e "     Mirrors your phone's local screen. Useful for direct interaction."
+    echo -e "     Orientation/aspect ratio is constrained to match your phone screen."
+    echo -e "   - ${BOLD}Independent Desktop Mode (Port 5901+ / Display :2+)${RESET}:"
+    echo -e "     Starts a virtual desktop workspace at widescreen ${BOLD}${custom_res}${RESET} aspect ratio."
+    echo -e "     Completely independent of your phone's display orientation or scale."
+    echo -e "     To set this mode run: ${CYAN}proot-desk mode ${distro} standalone${RESET}"
+    echo ""
+    echo -e "3. Install a ${BOLD}VNC Viewer app${RESET} on the other device:"
+    echo -e "   - ${WHITE}Android TV / Fire TV / Smart TV${RESET}: Search for ${GREEN}VNC Viewer${RESET} or ${GREEN}bVNC${RESET} in the TV app store."
+    echo -e "   - ${WHITE}PC (Windows / Mac / Linux)${RESET}: Download free ${UNDERLINE}RealVNC Viewer${RESET}:"
+    echo -e "     ${CYAN}https://www.realvnc.com/en/connect/download/viewer/${RESET}"
+    echo -e "   - ${WHITE}Android Phone / Tablet${RESET}: Install RealVNC from Play Store:"
+    echo -e "     ${CYAN}https://play.google.com/store/apps/details?id=com.realvnc.viewer.android${RESET}"
+    echo -e "   - ${WHITE}iPhone / iPad${RESET}: Install RealVNC from App Store:"
+    echo -e "     ${CYAN}https://apps.apple.com/app/vnc-viewer-remote-desktop/id352048331${RESET}"
+    echo ""
+
+    local mode_name="Phone Mirroring"
+    if [ "$v_only" = "1" ] || [ "$d_num" -ne 1 ]; then
+      mode_name="Independent Desktop"
+    fi
+
+    if [ "$ip_addr" = "127.0.0.1" ]; then
+      echo -e "4. Open the VNC app on that device and connect to: ${BOLD}${YELLOW}[your-phone-network-ip]:${vnc_port}${RESET}"
+      echo -e "   ${RED}Current Status: No active Wi-Fi/Hotspot detected. Defaulting to local 127.0.0.1:${vnc_port}${RESET}"
+    else
+      echo -e "4. Open the VNC app on that device and enter this EXACT address to connect:"
+      echo -e "   Address/Host:  ${BOLD}${GREEN}${ip_addr}${RESET}"
+      echo -e "   Port:          ${BOLD}${GREEN}${vnc_port}${RESET} (${mode_name} Mode)"
+      echo -e "   (Or enter:     ${BOLD}${GREEN}${ip_addr}:${vnc_port}${RESET})"
+    fi
+    echo -e "   No password is required. Just click Connect/OK!"
+    echo -e "${BOLD}${CYAN}====================================${RESET}"
+    echo ""
+
+    if ! disable_phantom_killer &>/dev/null; then
+      print_box_top "${YELLOW}${BOLD}"
+      print_box_line "center" "${YELLOW}${BOLD}" "${YELLOW}${BOLD}" "Background Process Restrictions (Signal 9 Killer)"
+      print_box_sep "─" "${YELLOW}${BOLD}"
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "Android 12+ limits background child processes to 32 per app."
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "Running a desktop environment exceeds this, causing the Android"
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "OS to immediately terminate Termux (Process completed signal 9)."
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "To permanently prevent this, apply these fixes:"
+      print_box_sep "─" "${YELLOW}${BOLD}"
+      print_box_line "left" "${YELLOW}${BOLD}" "${GREEN}${BOLD}" "1. DISABLE BATTERY OPTIMIZATION (Essential):"
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   - Go to phone Settings > Apps > Termux > Battery."
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   - Change the setting to: Unrestricted."
+      print_box_sep "─" "${YELLOW}${BOLD}"
+      print_box_line "left" "${YELLOW}${BOLD}" "${GREEN}${BOLD}" "2. DISABLE CHILD PROCESS RESTRICTIONS (On Phone):"
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   - Go to phone Settings > Developer Options."
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "     (To enable: tap Build Number 7 times in About Phone)."
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   - Turn ON: Disable child process restrictions."
+      print_box_line "left" "${YELLOW}${BOLD}" "${GRAY}" "     (Note: This toggle is available on Android 12L/13/14+ and"
+      print_box_line "left" "${YELLOW}${BOLD}" "${GRAY}" "     may be missing or hidden on some devices/skins)."
+      print_box_sep "─" "${YELLOW}${BOLD}"
+      print_box_line "left" "${YELLOW}${BOLD}" "${GREEN}${BOLD}" "3. ALTERNATIVE METHOD (Via PC ADB if setting is missing):"
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   Connect phone to PC with USB debugging enabled, then run:"
+      print_box_line "left" "${YELLOW}${BOLD}" "${CYAN}" "   adb shell \"/system/bin/device_config put activity_manager max_phantom_processes 2147483647\""
+      print_box_bottom "${YELLOW}${BOLD}"
+      echo ""
+    fi
   fi
 
   log "Desktop launched: distro=$distro de=$de user=${user:-root} display=$display acceleration=$active_mode"
@@ -2618,7 +2762,7 @@ run_wizard() {
 
   print_header
   check_proot_distro
-  check_termux_x11
+  check_termux_x11 "global"
 
   print_step "Scanning installed distributions..."
   local installed
@@ -2716,12 +2860,7 @@ run_wizard() {
     fi
   fi
 
-  install_desktop_environment "$distro" "$de" "$auto_yes"
-
-  local display
-  display=$(next_display_number)
-
-  launch_desktop "$distro" "$de" "$SELECTED_USER" "$display"
+  cmd_start "$distro"
 }
 
 # -----------------------------------------------------------------------------
@@ -2975,7 +3114,7 @@ cmd_start() {
   local distro="$1" display_or_id="$2" de_arg="$3" auto_yes="$4" no_repair="$5"
 
   check_proot_distro
-  check_termux_x11
+  check_termux_x11 "$distro"
 
   if [ -z "$distro" ]; then
     run_wizard ""
@@ -3010,7 +3149,14 @@ cmd_start() {
   if [[ "$display_or_id" =~ ^:[0-9]+$ ]]; then
     display="$display_or_id"
   else
-    display=$(next_display_number)
+    local v_only
+    v_only=$(config_get_distro_field "${distro:-global}" "vnc_only")
+    v_only="${v_only:-1}"
+    local start_num=1
+    if [ "$v_only" = "1" ]; then
+      start_num=2
+    fi
+    display=$(next_display_number_from "$start_num")
   fi
 
   # Determine DE
@@ -3055,7 +3201,153 @@ cmd_start() {
   install_desktop_environment "$distro" "$de" "$auto_yes"
   local saved_user
   saved_user=$(config_get_distro_field "$distro" "user")
-  launch_desktop "$distro" "$de" "$saved_user" "$display" "$no_repair"
+
+  local started_triple=0
+  if [ -z "$display_or_id" ]; then
+    # Start Display :1 (Termux:X11 / VNC port 5900)
+    print_step "Launching Termux:X11 session on display :1..."
+    launch_desktop "$distro" "$de" "$saved_user" ":1" "$no_repair" "1" || true
+
+    # Start Display :2 (Wireless / VNC port 5901)
+    print_step "Launching Independent Wireless session on display :2..."
+    launch_desktop "$distro" "$de" "$saved_user" ":2" "$no_repair" "1" || true
+
+    # Start Display :3 (HDMI / VNC port 5902)
+    print_step "Launching Independent HDMI session on display :3..."
+    launch_desktop "$distro" "$de" "$saved_user" ":3" "$no_repair" "1" || true
+
+    started_triple=1
+    # Save display :2 as the dynamic config reference so status and stop can refer to it
+    config_set_distro_field "$distro" "display" ":2"
+  else
+    launch_desktop "$distro" "$de" "$saved_user" "$display" "$no_repair" "0"
+  fi
+
+  if [ "$started_triple" = "1" ]; then
+    # Auto-open local viewer if termux-x11 is installed
+    if command -v termux-x11 &>/dev/null; then
+      am start --user 0 -n com.termux.x11/com.termux.x11.MainActivity &>/dev/null || true
+    fi
+
+    config_set_distro_field "$distro" "last_de" "$de"
+
+    print_success "Multi-display session started successfully."
+    echo ""
+    print_box_top "${GREEN}${BOLD}"
+    print_box_line "center" "${GREEN}${BOLD}" "${GREEN}${BOLD}" "Desktop is running!"
+    print_box_sep "─" "${GREEN}${BOLD}"
+    
+    local ip_addr
+    ip_addr=$(get_lan_ip)
+
+    local res_d2 res_d3
+    res_d2=$(config_get_distro_field "${distro:-global}" "resolution")
+    if [ -z "$res_d2" ]; then
+      res_d2=$(detect_display_resolution ":2")
+    fi
+    res_d3=$(detect_display_resolution ":3")
+
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Multi-Display Session Active (Independent displays):"
+    print_box_sep "─" "${GREEN}${BOLD}"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " 1. Wireless Desktop (Display :2):"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - VNC Port:  5901"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Resolution: ${res_d2}  (Independent widescreen)"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Address:    ${ip_addr}:5901"
+    print_box_sep "─" "${GREEN}${BOLD}"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " 2. HDMI Desktop (Display :3):"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Output:     Connect phone to HDMI monitor via USB-C"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Resolution: ${res_d3}  (Adapts to external monitor)"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - VNC Mirror: ${ip_addr}:5902 (Optional)"
+    print_box_sep "─" "${GREEN}${BOLD}"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " 3. Termux:X11 Desktop (Display :1):"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Output:     Visible on phone screen via Termux:X11 app"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - VNC Mirror: ${ip_addr}:5900 (Optional)"
+    print_box_sep "─" "${GREEN}${BOLD}"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Distro:      ${distro}"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Desktop:     ${de}"
+    if [ -n "$saved_user" ]; then
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - User:        ${saved_user}"
+    else
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - User:        root (passwordless)"
+    fi
+    local friendly_mode="CPU"
+    [ "$active_mode" != "software" ] && friendly_mode="GPU"
+
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Displays:     :1 (Termux:X11), :2 (Wireless), :3 (HDMI)"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Rendering:    ${friendly_mode} mode"
+    print_box_bottom "${GREEN}${BOLD}"
+    echo ""
+
+    echo -e "${BOLD}${CYAN}=== WIRELESS DISPLAY SETUP GUIDE ===${RESET}"
+    echo -e "To display your Linux desktop on another device (Smart TV, PC, tablet, monitor):"
+    echo ""
+    echo -e "1. Connect your phone and the other device to the ${BOLD}same Wi-Fi network${RESET}."
+    echo -e "   - OR: Turn on your phone's ${BOLD}Mobile Hotspot${RESET} and connect the other device to it."
+    echo ""
+    echo -e "2. Connection Modes & Port Allocation:"
+    echo -e "   - ${BOLD}Independent Wireless Desktop (Port 5901 / Display :2)${RESET}:"
+    echo -e "     Starts a virtual desktop workspace at widescreen ${BOLD}${res_d2}${RESET} aspect ratio."
+    echo -e "     Completely independent of your phone's display orientation or scale."
+    echo ""
+    echo -e "   - ${BOLD}Independent HDMI Desktop (Port 5902 / Display :3)${RESET}:"
+    echo -e "     Starts a virtual desktop workspace that displays directly on your HDMI monitor."
+    echo -e "     No wireless IP or VNC client is required to view physically on your HDMI monitor."
+    echo -e "     Optional: Connect VNC client to Port 5902 to mirror this screen wirelessly."
+    echo ""
+    echo -e "   - ${BOLD}Termux:X11 Desktop (Port 5900 / Display :1)${RESET}:"
+    echo -e "     Starts a local desktop visible on your phone screen via the Termux:X11 app."
+    echo -e "     No wireless IP or VNC client is required to view physically on your phone."
+    echo -e "     Optional: Connect VNC client to Port 5900 to mirror this screen wirelessly."
+    echo ""
+    echo -e "3. Install a ${BOLD}VNC Viewer app${RESET} on the other device:"
+    echo -e "   - Search for ${GREEN}VNC Viewer${RESET} or ${GREEN}bVNC${RESET} on your TV, PC, tablet, or phone."
+    echo ""
+    if [ "$ip_addr" = "127.0.0.1" ]; then
+      echo -e "4. Open the VNC app on that device and connect to your preferred mode:"
+      echo -e "   - Wireless Desktop:   ${BOLD}${YELLOW}[your-phone-network-ip]:5901${RESET}"
+      echo -e "   - HDMI VNC Mirror:    ${BOLD}${YELLOW}[your-phone-network-ip]:5902${RESET}"
+      echo -e "   - Termux:X11 Mirror:  ${BOLD}${YELLOW}[your-phone-network-ip]:5900${RESET}"
+      echo -e "   ${RED}Current Status: No active Wi-Fi/Hotspot detected. Defaulting to local 127.0.0.1${RESET}"
+    else
+      echo -e "4. Open the VNC app on that device and connect to your preferred mode:"
+      echo -e "   - Wireless Desktop (Widescreen ${res_d2}):"
+      echo -e "     Address: ${BOLD}${GREEN}${ip_addr}${RESET}  Port: ${BOLD}${GREEN}5901${RESET}  (Or: ${BOLD}${GREEN}${ip_addr}:5901${RESET})"
+      echo -e "   - HDMI VNC Mirror (Widescreen ${res_d3}):"
+      echo -e "     Address: ${BOLD}${GREEN}${ip_addr}${RESET}  Port: ${BOLD}${GREEN}5902${RESET}  (Or: ${BOLD}${GREEN}${ip_addr}:5902${RESET})"
+      echo -e "   - Termux:X11 VNC Mirror (Local scale):"
+      echo -e "     Address: ${BOLD}${GREEN}${ip_addr}${RESET}  Port: ${BOLD}${GREEN}5900${RESET}  (Or: ${BOLD}${GREEN}${ip_addr}:5900${RESET})"
+    fi
+    echo -e "   No password is required. Just click Connect/OK!"
+    echo -e "${BOLD}${CYAN}====================================${RESET}"
+    echo ""
+
+    if ! disable_phantom_killer &>/dev/null; then
+      print_box_top "${YELLOW}${BOLD}"
+      print_box_line "center" "${YELLOW}${BOLD}" "${YELLOW}${BOLD}" "Background Process Restrictions (Signal 9 Killer)"
+      print_box_sep "─" "${YELLOW}${BOLD}"
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "Android 12+ limits background child processes to 32 per app."
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "Running a desktop environment exceeds this, causing the Android"
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "OS to immediately terminate Termux (Process completed signal 9)."
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "To permanently prevent this, apply these fixes:"
+      print_box_sep "─" "${YELLOW}${BOLD}"
+      print_box_line "left" "${YELLOW}${BOLD}" "${GREEN}${BOLD}" "1. DISABLE BATTERY OPTIMIZATION (Essential):"
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   - Go to phone Settings > Apps > Termux > Battery."
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   - Change the setting to: Unrestricted."
+      print_box_sep "─" "${YELLOW}${BOLD}"
+      print_box_line "left" "${YELLOW}${BOLD}" "${GREEN}${BOLD}" "2. DISABLE CHILD PROCESS RESTRICTIONS (On Phone):"
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   - Go to phone Settings > Developer Options."
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "     (To enable: tap Build Number 7 times in About Phone)."
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   - Turn ON: Disable child process restrictions."
+      print_box_line "left" "${YELLOW}${BOLD}" "${GRAY}" "     (Note: This toggle is available on Android 12L/13/14+ and"
+      print_box_line "left" "${YELLOW}${BOLD}" "${GRAY}" "     may be missing or hidden on some devices/skins)."
+      print_box_sep "─" "${YELLOW}${BOLD}"
+      print_box_line "left" "${YELLOW}${BOLD}" "${GREEN}${BOLD}" "3. ALTERNATIVE METHOD (Via PC ADB if setting is missing):"
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   Connect phone to PC with USB debugging enabled, then run:"
+      print_box_line "left" "${YELLOW}${BOLD}" "${CYAN}" "   adb shell \"/system/bin/device_config put activity_manager max_phantom_processes 2147483647\""
+      print_box_bottom "${YELLOW}${BOLD}"
+      echo ""
+    fi
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -3078,6 +3370,7 @@ cmd_stop() {
       done
       pkill -9 -f termux-x11 2>/dev/null || true
       pkill -9 -f Xwayland 2>/dev/null || true
+      pkill -9 -f Xvfb 2>/dev/null || true
       pkill -9 -f x11vnc 2>/dev/null || true
       rm -f /tmp/.X11-unix/X* \${TMPDIR}/.X11-unix/X* 2>/dev/null
       rm -f /tmp/.X*-lock \${TMPDIR}/.X*-lock 2>/dev/null
@@ -3085,23 +3378,34 @@ cmd_stop() {
     "
     log "All sessions stopped."
   else
-    local display
-    display=$(config_get_distro_field "$target" "display")
     run_with_spinner "Stopping session for ${target}" bash -c "
+      # Find all active displays for this distro before killing the processes
+      pgrep -f 'proot-distro login.*${target}' | while read -r pid; do
+        if [ -n \"\$pid\" ]; then
+          local disp
+          disp=\$(cat \"/proc/\$pid/cmdline\" 2>/dev/null | tr '\\0' ' ' | grep -Eo 'DISPLAY=:[0-9]+|DISPLAY= :[0-9]+' | grep -Eo ':[0-9]+')
+          if [ -n \"\$disp\" ]; then
+            echo \"\$disp\"
+          fi
+        fi
+      done | sort -u | while read -r display; do
+        if [ -n \"\$display\" ]; then
+          pkill -9 -f \"termux-x11.*\$display\" 2>/dev/null || true
+          pkill -9 -f \"Xwayland.*\$display\" 2>/dev/null || true
+          pkill -9 -f \"Xvfb.*\$display\" 2>/dev/null || true
+          pkill -9 -f \"x11vnc.*\$display\" 2>/dev/null || true
+          local d_num=\"\${display#*:}\"
+          rm -f \"/tmp/.X11-unix/X\${d_num}\" \"\${TMPDIR}/.X11-unix/X\${d_num}\" 2>/dev/null
+          rm -f \"/tmp/.X\${d_num}-lock\" \"\${TMPDIR}/.X\${d_num}-lock\" 2>/dev/null
+          rm -f \"/tmp/.tX\${d_num}-lock\" \"\${TMPDIR}/.tX\${d_num}-lock\" 2>/dev/null
+        fi
+      done
+      
       pgrep -f 'proot.*${target}' | while read -r pid; do
         if [ -n \"\$pid\" ] && ! cat \"/proc/\$pid/cmdline\" 2>/dev/null | tr '\\0' ' ' | grep -q 'proot-desk'; then
           kill -9 \"\$pid\" 2>/dev/null || true
         fi
       done
-      if [ -n \"\${display}\" ]; then
-        pkill -9 -f \"termux-x11\" 2>/dev/null || true
-        pkill -9 -f \"Xwayland\" 2>/dev/null || true
-        pkill -9 -f \"x11vnc\" 2>/dev/null || true
-        local d_num=\"\${display#*:}\"
-        rm -f \"/tmp/.X11-unix/X\${d_num}\" \"\${TMPDIR}/.X11-unix/X\${d_num}\" 2>/dev/null
-        rm -f \"/tmp/.X\${d_num}-lock\" \"\${TMPDIR}/.X\${d_num}-lock\" 2>/dev/null
-        rm -f \"/tmp/.tX\${d_num}-lock\" \"\${TMPDIR}/.tX\${d_num}-lock\" 2>/dev/null
-      fi
     "
     log "Session stopped for distro: $target"
   fi
@@ -3133,15 +3437,40 @@ cmd_status() {
 
   while IFS= read -r d; do
     [ -z "$d" ] && continue
-    local display de user
-    display=$(config_get_distro_field "$d" "display")
+    local de user
     de=$(config_get_distro_field "$d" "last_de")
     user=$(config_get_distro_field "$d" "user")
 
-    if [ -n "$display" ] && pgrep -f "termux-x11 ${display}" &>/dev/null; then
-      echo -e "  ${GREEN}[running]${RESET} Distro: ${WHITE}${d}${RESET} | Desktop: ${CYAN}${de}${RESET} | Display: ${YELLOW}${display}${RESET}"
-      found=1
-    fi
+     local display_num
+     for display_num in {1..10}; do
+       local is_running=0
+       if pgrep -f "termux-x11.*:${display_num}" &>/dev/null; then
+         if pgrep -f "proot-distro login.*${d}" | while read -r pid; do cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' | grep -q -E "DISPLAY=:${display_num}|DISPLAY= :${display_num}" && echo "yes"; done | grep -q "yes"; then
+           is_running=1
+         fi
+       elif pgrep -f "Xvfb.*:${display_num}" &>/dev/null; then
+         if pgrep -f "proot-distro login.*${d}" | while read -r pid; do cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' | grep -q -E "DISPLAY=:${display_num}|DISPLAY= :${display_num}" && echo "yes"; done | grep -q "yes"; then
+           is_running=2
+         fi
+       fi
+       
+       if [ "$is_running" -ne 0 ]; then
+         local vnc_port=$((5899 + display_num))
+         local current_ip
+         current_ip=$(get_lan_ip)
+         local mode_lbl="independent"
+         if [ "$display_num" -eq 1 ]; then
+           mode_lbl="Termux:X11 (local/mirror)"
+         elif [ "$display_num" -eq 2 ]; then
+           mode_lbl="Independent Wireless"
+         elif [ "$display_num" -eq 3 ]; then
+           mode_lbl="Independent HDMI"
+         fi
+        echo -e "  ${GREEN}[running]${RESET} Distro: ${WHITE}${d}${RESET} | Desktop: ${CYAN}${de}${RESET} | Display: ${YELLOW}:${display_num}${RESET} | Mode: ${BLUE}${mode_lbl}${RESET}"
+        echo -e "            Wireless VNC Address: ${BOLD}${GREEN}${current_ip}:${vnc_port}${RESET}"
+        found=1
+      fi
+    done
   done <<< "$installed"
 
   if [ $found -eq 0 ]; then
@@ -3166,6 +3495,20 @@ cmd_status() {
       echo -e "    - PID: ${WHITE}$pid${RESET} | Cmd: ${GRAY}$cmdline${RESET}"
       proc_found=1
     done <<< "$x11_pids"
+  fi
+
+  # Scan Xvfb processes
+  local xvfb_pids
+  xvfb_pids=$(pgrep -f "Xvfb" 2>/dev/null)
+  if [ -n "$xvfb_pids" ]; then
+    echo -e "  ${CYAN}Xvfb Virtual Servers:${RESET}"
+    while read -r pid; do
+      [ -z "$pid" ] && continue
+      local cmdline
+      cmdline=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ')
+      echo -e "    - PID: ${WHITE}$pid${RESET} | Cmd: ${GRAY}$cmdline${RESET}"
+      proc_found=1
+    done <<< "$xvfb_pids"
   fi
 
   # Scan PulseAudio processes
@@ -3227,7 +3570,7 @@ cmd_kill() {
 
   if [[ "$target" =~ ^:[0-9]+$ ]]; then
     local xpid
-    xpid=$(pgrep -f "termux-x11 ${target}" 2>/dev/null)
+    xpid=$(pgrep -f "termux-x11.*${target}" 2>/dev/null)
     if [ -n "$xpid" ]; then
       run_with_spinner "Killing display server ${target} (PID ${xpid})" kill -9 $xpid
     fi
@@ -3587,6 +3930,8 @@ cmd_help() {
   echo -e "  ${CYAN}proot-desk status${RESET}                       Show running sessions"
   echo -e "  ${CYAN}proot-desk list${RESET}                         List installed distros with their IDs and config"
   echo -e "  ${CYAN}proot-desk logs${RESET}                         View the latest background troubleshooting logs"
+  echo -e "  ${CYAN}proot-desk mode <distro> [cpu|gpu|standalone|phone]${RESET}"
+  echo -e "                                  Set rendering (cpu/gpu) or connection (standalone/phone) mode"
   echo -e "  ${CYAN}proot-desk reset <distro>${RESET}               Remove desktop configurations (keeps distro rootfs)"
   echo -e "  ${CYAN}proot-desk remove-desk <distro>${RESET}          Uninstall desktop environment packages from container"
   echo -e "  ${CYAN}proot-desk delete <distro>${RESET}              Completely remove distro container and configurations"
@@ -3608,6 +3953,8 @@ cmd_help() {
   echo -e "  ${GRAY}proot-desk start ubuntu${RESET}"
   echo -e "  ${GRAY}proot-desk start kali :2 xfce4${RESET}"
   echo -e "  ${GRAY}proot-desk start ubuntu -y${RESET}"
+  echo -e "  ${GRAY}proot-desk mode kali cpu${RESET}"
+  echo -e "  ${GRAY}proot-desk mode kali standalone${RESET}"
   echo -e "  ${GRAY}proot-desk stop kali${RESET}"
   echo -e "  ${GRAY}proot-desk reset kali${RESET}"
   echo -e "  ${GRAY}proot-desk remove-desk kali${RESET}"
@@ -3688,6 +4035,54 @@ case "$COMMAND" in
       run_wizard "$AUTO_YES"
     else
       cmd_start "$DISTRO" "$DISPLAY_ARG" "$DE_ARG" "$AUTO_YES" "$NO_REPAIR_FLAG"
+    fi
+    ;;
+  mode)
+    DISTRO="${1:-}"
+    VAL="${2:-}"
+    if [ -z "$DISTRO" ]; then
+      print_error "Specify a distribution. Example: proot-desk mode kali cpu"
+      exit 1
+    fi
+    if [ -z "$VAL" ]; then
+      local current_render current_vnc current_res
+      current_render=$(config_get_distro_field "$DISTRO" "render_mode")
+      current_render="${current_render:-cpu}"
+      current_vnc=$(config_get_distro_field "$DISTRO" "vnc_only")
+      current_vnc="${current_vnc:-1}"
+      current_res=$(config_get_distro_field "$DISTRO" "resolution")
+      current_res="${current_res:-1920x1080}"
+      
+      local vnc_desc="phone mirroring (hybrid) mode"
+      if [ "$current_vnc" = "1" ]; then
+        vnc_desc="standalone (VNC-only) mode"
+      fi
+      
+      print_info "Current settings for ${DISTRO}:"
+      echo -e "  Rendering preference:  ${GREEN}${current_render}${RESET} (default is cpu)"
+      echo -e "  Connection mode:       ${GREEN}${vnc_desc}${RESET}"
+      echo -e "  Standalone resolution: ${GREEN}${current_res}${RESET} (default is 1920x1080)"
+      exit 0
+    fi
+    if [ "$VAL" = "cpu" ] || [ "$VAL" = "gpu" ]; then
+      config_set_distro_field "$DISTRO" "render_mode" "$VAL"
+      print_success "Rendering mode for ${DISTRO} set to: ${VAL}"
+      log "Rendering mode for ${DISTRO} set to: ${VAL}"
+    elif [ "$VAL" = "standalone" ] || [ "$VAL" = "vnc-only" ] || [ "$VAL" = "vnc_only" ]; then
+      config_set_distro_field "$DISTRO" "vnc_only" "1"
+      print_success "Connection mode for ${DISTRO} set to: standalone (VNC-only) mode"
+      log "Connection mode for ${DISTRO} set to: standalone for distro: ${DISTRO}"
+    elif [ "$VAL" = "phone" ] || [ "$VAL" = "hybrid" ]; then
+      config_set_distro_field "$DISTRO" "vnc_only" "0"
+      print_success "Connection mode for ${DISTRO} set to: phone mirroring (hybrid) mode"
+      log "Connection mode for ${DISTRO} set to: hybrid for distro: ${DISTRO}"
+    elif [[ "$VAL" =~ ^[0-9]+x[0-9]+$ ]]; then
+      config_set_distro_field "$DISTRO" "resolution" "$VAL"
+      print_success "Standalone resolution for ${DISTRO} set to: ${VAL}"
+      log "Standalone resolution for ${DISTRO} set to: ${VAL}"
+    else
+      print_error "Invalid parameter: ${VAL}. Valid options are: 'cpu', 'gpu', 'standalone'/'phone', or a custom resolution like '1920x1080'."
+      exit 1
     fi
     ;;
   stop)         cmd_stop "${1:-}" ;;
