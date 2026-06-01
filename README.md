@@ -36,7 +36,7 @@ Run independent desktops simultaneously. Fully interactive.
 
 <!-- markdownlint-disable MD033 -->
 <div align="center">
-  <img src="groot_desk_banner.png" alt="groot-desk Feature Banner" width="100%" style="border-radius: 8px; margin: 20px 0;" />
+  <img src="https://github.com/user-attachments/assets/982ac91e-b521-432d-b133-71b6a24641f1" alt="groot-desk Feature Banner" width="100%" style="border-radius: 8px; margin: 20px 0;" />
 </div>
 <!-- markdownlint-enable MD033 -->
 
