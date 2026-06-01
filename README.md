@@ -35,6 +35,12 @@ Run independent desktops simultaneously. Fully interactive.
 - **Automatic Display Conflict Resolution**: Automatically detects and clears old session lock files, active display sockets, and port conflicts upon launch or exit, preventing common desktop startup failures.
 
 <!-- markdownlint-disable MD033 -->
+<div align="center">
+  <img src="groot_desk_banner.png" alt="groot-desk Feature Banner" width="100%" style="border-radius: 8px; margin: 20px 0;" />
+</div>
+<!-- markdownlint-enable MD033 -->
+
+<!-- markdownlint-disable MD033 -->
 <p align="center">
   <img src="https://github.com/user-attachments/assets/9193c4da-4ca6-418a-86e8-3aaa6cb91b48" width="30%" alt="Ubuntu gnome on Android" />
   &nbsp;
