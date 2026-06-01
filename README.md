@@ -129,6 +129,8 @@ To display the desktop environment on another device (such as a computer, tablet
 | Command | Action |
 | --- | --- |
 | `groot-desk` | Setup wizard - install, select, or launch a desktop |
+| `groot-desk install <distro>` | Install a known distribution (ubuntu, kali, debian...) |
+| `groot-desk install <name> <image:tag>` | Install any custom Docker Hub / OCI image (e.g. debian:12) |
 | `groot-desk start <distro>` | Start with last used or detected desktop |
 | `groot-desk start <distro> :<n>` | Start on a specific display port |
 | `groot-desk start <distro> :<n> <de>` | Start a specific desktop on a specific display |
