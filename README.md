@@ -36,6 +36,14 @@ Run independent desktops simultaneously. Fully interactive.
 
 <!-- markdownlint-disable MD033 -->
 <p align="center">
+  <img src="https://github.com/user-attachments/assets/9193c4da-4ca6-418a-86e8-3aaa6cb91b48" width="30%" alt="Ubuntu gnome on Android" />
+  &nbsp;
+  <img src="https://github.com/user-attachments/assets/53e71008-07af-47d6-85c5-674793943a2a" width="30%" alt="Ubuntu lxqt on Android" />
+  &nbsp;
+  <img src="https://github.com/user-attachments/assets/d95b8bad-1842-42fe-a2e4-d01d07548c41" width="30%" alt="Ubuntu mate on Android" />
+</p>
+
+<p align="center">
   <img src="https://github.com/user-attachments/assets/3a78fc8c-3ef1-44bf-b50e-7d097bb789fc" width="48%" alt="Ubuntu on Android" />
   &nbsp;
   <img src="https://github.com/user-attachments/assets/51dafc46-64ef-4c4b-8434-8866e24c0d33" width="48%" alt="Kali on Android" />
