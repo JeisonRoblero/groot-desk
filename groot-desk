@@ -729,8 +729,31 @@ check_proot_distro() {
     print_warn "proot-distro is not installed."
     run_with_spinner "Installing proot-distro" pkg install proot-distro -y
     if [ $? -ne 0 ]; then
+      print_error "Failed to install proot-distro. Run: pkg install proot-distro"
       exit 1
     fi
+  fi
+
+  # For custom OCI distro installs, v5 is required
+  # Check if caller flagged that v5 is needed
+  if [ "${REQUIRE_PROOT_V5:-0}" = "1" ] && ! is_proot_distro_v5; then
+    print_warn "proot-distro v5 or later is required to install custom distributions."
+    read -rp "$(echo -e "${YELLOW}Upgrade proot-distro to v5 now? [Y/n]: ${RESET}")" confirm
+    confirm="${confirm:-Y}"
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+      print_error "Cannot continue without proot-distro v5. Run: pkg upgrade proot-distro"
+      exit 1
+    fi
+    run_with_spinner "Upgrading proot-distro" pkg install proot-distro -y
+    if [ $? -ne 0 ]; then
+      print_error "Failed to upgrade proot-distro. Run: pkg upgrade proot-distro"
+      exit 1
+    fi
+    if ! is_proot_distro_v5; then
+      print_error "proot-distro v5 still not detected after upgrade. Run: pkg upgrade proot-distro"
+      exit 1
+    fi
+    print_success "proot-distro upgraded to v5 successfully."
   fi
 }
 
@@ -1197,17 +1220,26 @@ init_de_metadata_for_distro() {
 get_de_purge_packages() {
   local distro="$1" pm="$2" de="$3"
   local pkgs=""
-  
+
   # Ensure metadata is initialized
   init_de_metadata_for_distro "$distro"
-  
-  # Include primary and fallback packages
-  pkgs="${DE_PACKAGE[$de]} ${DE_GENERIC_PACKAGE[$de]}"
+
+  # Always start with the exact package recorded at install time (if any)
+  # This guarantees remove-desk purges exactly what groot-desk installed
+  local recorded_pkg
+  recorded_pkg=$(config_get_distro_field "$distro" "installed_pkg_${de}")
+  if [ -n "$recorded_pkg" ]; then
+    pkgs="$recorded_pkg"
+    log "Using recorded install package for purge: $recorded_pkg ($de in $distro)"
+  fi
+
+  # Also include primary and fallback packages as safety net
+  pkgs="$pkgs ${DE_PACKAGE[$de]} ${DE_GENERIC_PACKAGE[$de]}"
   
   case "$de" in
     xfce4)
       case "$pm" in
-        apt)    pkgs="$pkgs xfce4* xfce4-goodies* xfce4-session* xfce4-terminal* xfwm4* xfdesktop4* xfce4-panel* kali-desktop-xfce* xubuntu-desktop* task-xfce-desktop* thunar* xfconf* libxfce4* exo-utils*" ;;
+        apt)    pkgs="$pkgs xfce4* xfce4-goodies* xfce4-session* xfce4-terminal* xfwm4* xfdesktop4* xfce4-panel* kali-desktop-xfce* xubuntu-desktop* task-xfce-desktop* thunar* xfconf* libxfce4* exo-utils* xfce4-power-manager* xfce4-notifyd* xfce4-screensaver* xfce4-pulseaudio-plugin* xfce4-whiskermenu-plugin* xfce4-statusnotifier-plugin* xfce4-clipman-plugin* mousepad* ristretto* xfburn* parole* lightdm* light-locker* libexo* libgarcon* libthunar* libxfce4panel* libxfce4util*" ;;
         apk)    pkgs="$pkgs xfce4* xfce4-terminal* xfce4-screensaver*" ;;
         pacman) pkgs="$pkgs xfce4 xfce4-goodies" ;;
         dnf)    pkgs="$pkgs @xfce-desktop-environment" ;;
@@ -1217,7 +1249,7 @@ get_de_purge_packages() {
       ;;
     lxqt)
       case "$pm" in
-        apt)    pkgs="$pkgs lxqt* lubuntu-desktop* task-lxqt-desktop* kali-desktop-lxqt* pcmanfm-qt* qterminal* lximage-qt* obconf-qt*" ;;
+        apt)    pkgs="$pkgs lxqt* lubuntu-desktop* task-lxqt-desktop* kali-desktop-lxqt* pcmanfm-qt* qterminal* lximage-qt* obconf-qt* liblxqt* lxqt-qtplugin* xdg-desktop-portal-lxqt* libfm-qt* libfakekey* sddm* liblxqt0* kquickimageedit* libkscreen* lxqt-archiver* featherpad* screengrab* lxqt-sudo* pavucontrol-qt* qps*" ;;
         apk)    pkgs="$pkgs lxqt-desktop* lxqt-common*" ;;
         pacman) pkgs="$pkgs lxqt" ;;
         dnf)    pkgs="$pkgs @lxqt-desktop-environment" ;;
@@ -1227,7 +1259,7 @@ get_de_purge_packages() {
       ;;
     mate)
       case "$pm" in
-        apt)    pkgs="$pkgs mate-desktop* mate-desktop-environment* ubuntu-mate-desktop* task-mate-desktop* kali-desktop-mate* caja* pluma* marco* atril* engrampa*" ;;
+        apt)    pkgs="$pkgs mate-desktop* mate-desktop-environment* ubuntu-mate-desktop* task-mate-desktop* kali-desktop-mate* caja* pluma* marco* atril* engrampa* mate-calc* mate-polkit* mate-media* mate-panel* mate-screensaver* mate-session-manager* mate-settings-daemon* mate-terminal* mate-notification-daemon* mate-power-manager* mate-indicator-applet* mate-user-guide* libmate-desktop* libmate-menu* libmate-panel* libmate-slab* libmate-window* libmatekbd* libmatemixer* libmateweather* ubuntu-mate-* plymouth-theme-ubuntu-mate* mate-utils* mate-system-monitor* mate-icon-theme* mate-themes* mate-tweak* mate-hud* lightdm* slick-greeter*" ;;
         apk)    pkgs="$pkgs mate-desktop* mate-icon-theme* mate-terminal* mate-session-manager*" ;;
         pacman) pkgs="$pkgs mate mate-extra" ;;
         dnf)    pkgs="$pkgs @mate-desktop-environment" ;;
@@ -1237,7 +1269,7 @@ get_de_purge_packages() {
       ;;
     kde)
       case "$pm" in
-        apt)    pkgs="$pkgs kde-plasma-desktop* kubuntu-desktop* task-kde-desktop* kali-desktop-kde* plasma-desktop* plasma-workspace* kwin* dolphin* konsole*" ;;
+        apt)    pkgs="$pkgs kde-plasma-desktop* kubuntu-desktop* task-kde-desktop* kali-desktop-kde* plasma-desktop* plasma-workspace* plasma-version* kwin* dolphin* konsole* layer-shell-qt* liblayershellqtinterface* libkdecorations* libkwin* kde-spectacle* kde-config-* kdeconnect* plasma-nm* plasma-pa* plasma-thunderbolt* plasma-disks* plasma-browser-integration* powerdevil* bluedevil* kdeplasma-addons* breeze* sddm* kscreen* libkscreen* kinfocenter* drkonqi* kde-gtk-config* kdialog* kmenuedit* ksystemstats* systemsettings*" ;;
         apk)    pkgs="$pkgs plasma-desktop*" ;;
         pacman) pkgs="$pkgs plasma-desktop" ;;
         dnf)    pkgs="$pkgs @kde-desktop-environment" ;;
@@ -1247,7 +1279,7 @@ get_de_purge_packages() {
       ;;
     gnome)
       case "$pm" in
-        apt)    pkgs="$pkgs gnome-session* gnome-terminal* ubuntu-desktop* task-gnome-desktop* kali-desktop-gnome* gnome-core* gnome-panel* metacity* gnome-flashback* nautilus* plank*" ;;
+        apt)    pkgs="$pkgs gnome-session* gnome-terminal* ubuntu-desktop* task-gnome-desktop* kali-desktop-gnome* gnome-core* gnome-panel* metacity* gnome-flashback* nautilus* plank* gnome-applets* gnome-screensaver* compiz* gnome-shell* gdm3* libgnome-panel* libmetacity* gnome-background-extras* gnome-control-center* gnome-settings-daemon* gnome-menus* gir1.2-gnomepanel* libgnome-autoar*" ;;
         apk)    pkgs="$pkgs gnome* gnome-terminal* plank*" ;;
         pacman) pkgs="$pkgs gnome gnome-extra plank" ;;
         dnf)    pkgs="$pkgs @gnome-desktop-environment plank" ;;
@@ -1257,7 +1289,7 @@ get_de_purge_packages() {
       ;;
     budgie)
       case "$pm" in
-        apt)    pkgs="$pkgs budgie-desktop* ubuntu-budgie-desktop*" ;;
+        apt)    pkgs="$pkgs budgie-desktop* ubuntu-budgie-desktop* budgie-indicator-applet* budgie-extras* libbudgie* budgie-nemo* nemo* lightdm* slick-greeter* budgie-wallpapers* ubuntu-budgie-* budgie-previews* budgie-hotcorners* budgie-applications-menu* libbudgieprivate* libmagpie*" ;;
         apk)    pkgs="$pkgs budgie-desktop*" ;;
         pacman) pkgs="$pkgs budgie-desktop" ;;
         dnf)    pkgs="$pkgs @budgie-desktop-environment" ;;
@@ -1267,7 +1299,7 @@ get_de_purge_packages() {
       ;;
     cinnamon)
       case "$pm" in
-        apt)    pkgs="$pkgs cinnamon* cinnamon-desktop-environment* task-cinnamon-desktop* kali-desktop-cinnamon*" ;;
+        apt)    pkgs="$pkgs cinnamon* cinnamon-desktop-environment* task-cinnamon-desktop* kali-desktop-cinnamon* nemo* libcinnamon* mint-themes* mint-cursor-themes* mint-x-icons* mint-y-icons* python3-cinnamon* lightdm* slick-greeter* muffin* caribou* gnome-screensaver*" ;;
         apk)    pkgs="$pkgs cinnamon* cinnamon-screensaver* cinnamon-desktop*" ;;
         pacman) pkgs="$pkgs cinnamon" ;;
         dnf)    pkgs="$pkgs @cinnamon-desktop-environment" ;;
@@ -1277,7 +1309,7 @@ get_de_purge_packages() {
       ;;
     openbox)
       case "$pm" in
-        apt)    pkgs="$pkgs openbox*" ;;
+        apt)    pkgs="$pkgs openbox* obconf* openbox-menu* obmenu* tint2* lxpanel* feh* nitrogen* compton* picom* lxsession* lxappearance* lxrandr* lxinput*" ;;
         apk)    pkgs="$pkgs openbox*" ;;
         pacman) pkgs="$pkgs openbox" ;;
         dnf)    pkgs="$pkgs openbox" ;;
@@ -1456,6 +1488,51 @@ install_desktop_environment() {
   # Initialize desktop environment metadata for this specific distro
   init_de_metadata_for_distro "$distro"
   local pkg="${DE_PACKAGE[$de]}"
+  local generic_pkg="${DE_GENERIC_PACKAGE[$de]}"
+  local pm
+  pm=$(get_distro_pkg_manager "$distro")
+
+  # For apt-based unknown distros, probe which specific metapackage actually exists
+  # before falling back to generics. This ensures the best available
+  # distro-specific package is installed and can be cleanly removed.
+  local custom_distro
+  custom_distro=$(config_get_distro_field "$distro" "custom_distro")
+  if [ "$pm" = "apt" ] && { [ "$pkg" = "$generic_pkg" ] || [ "${custom_distro}" = "1" ]; }; then
+    print_step "Probing available desktop packages for ${de} in ${distro}..."
+    local probe_candidates=""
+    case "$de" in
+      xfce4)    probe_candidates="kali-desktop-xfce xubuntu-desktop task-xfce-desktop xfce4" ;;
+      lxqt)     probe_candidates="kali-desktop-lxqt lubuntu-desktop task-lxqt-desktop lxqt" ;;
+      mate)     probe_candidates="kali-desktop-mate ubuntu-mate-desktop task-mate-desktop mate-desktop-environment" ;;
+      kde)      probe_candidates="kali-desktop-kde kubuntu-desktop task-kde-desktop kde-plasma-desktop" ;;
+      gnome)    probe_candidates="kali-desktop-gnome ubuntu-desktop task-gnome-desktop gnome-session-flashback" ;;
+      budgie)   probe_candidates="ubuntu-budgie-desktop budgie-desktop" ;;
+      cinnamon) probe_candidates="kali-desktop-cinnamon cinnamon-desktop-environment task-cinnamon-desktop cinnamon" ;;
+      openbox)  probe_candidates="openbox" ;;
+    esac
+    local probed_pkg=""
+    for candidate in $probe_candidates; do
+      local found
+      found=$(proot-distro login "$distro" -- bash -c \
+        "apt-cache show '$candidate' 2>/dev/null | grep -c '^Package:'" 2>/dev/null || echo 0)
+      if [ "${found:-0}" -gt 0 ]; then
+        probed_pkg="$candidate"
+        log "Probed: found $candidate for $de in $distro"
+        break
+      fi
+    done
+    if [ -n "$probed_pkg" ]; then
+      pkg="$probed_pkg"
+      print_success "Using package: ${pkg}"
+    else
+      log "Probe found nothing for $de in $distro, using generic: $pkg"
+    fi
+  fi
+
+  # Record exactly which package is going to be installed so remove-desk
+  # can cleanly purge it later without guessing
+  config_set_distro_field "$distro" "installed_pkg_${de}" "$pkg"
+  log "Recording install package for $de in $distro: $pkg"
 
   if de_is_installed "$distro" "$de"; then
     print_success "${de} is already installed in ${distro}."
@@ -3719,12 +3796,19 @@ cmd_list() {
 # -----------------------------------------------------------------------------
 cmd_install() {
   local distro="$1"
-  check_proot_distro
+  local oci_image="${2:-}"  # optional: custom OCI image e.g. "ubuntu:24.04" or "kalilinux/kali-rolling"
 
   if [ -z "$distro" ]; then
     print_error "Specify a distribution to install. Example: groot-desk install kali"
+    print_info  "For custom distros: groot-desk install myname ubuntu:24.04"
     exit 1
   fi
+
+  # If a custom OCI image is passed, v5 is required
+  if [ -n "$oci_image" ]; then
+    REQUIRE_PROOT_V5=1
+  fi
+  check_proot_distro
 
   # Check if already installed
   local installed
@@ -3734,35 +3818,65 @@ cmd_install() {
     exit 0
   fi
 
-  # Validate distro is in our registry
   local available
   available=$(get_available_distros)
-  if ! echo "$available" | grep -qx "$distro"; then
-    print_error "Distribution '${distro}' is not supported. Supported distros:"
-    echo "$available" | sed 's/^/  /'
-    exit 1
+  local is_known=0
+  echo "$available" | grep -qx "$distro" && is_known=1
+
+  # If not a known distro and no OCI image supplied, prompt for OCI image
+  if [ $is_known -eq 0 ] && [ -z "$oci_image" ]; then
+    if ! is_proot_distro_v5; then
+      print_error "Distribution '${distro}' is not in the supported list and proot-distro v5 is required for custom installs."
+      print_info "Supported distros:"
+      echo "$available" | sed 's/^/  /'
+      exit 1
+    fi
+    echo ""
+    print_warn "Distribution '${distro}' is not in the known list."
+    print_info "Any Docker Hub image can be installed using its image:tag format. Examples:"
+    echo -e "  ${GRAY}ubuntu:24.04       debian:12          alpine:3.23${RESET}"
+    echo -e "  ${GRAY}fedora:44          kalilinux/kali-rolling    manjarolinux/base${RESET}"
+    print_info "Find images at: https://hub.docker.com"
+    echo ""
+    read -rp "$(echo -e "${CYAN}Enter OCI image for '${distro}' (or leave blank to cancel): ${RESET}")" oci_image
+    oci_image=$(echo "$oci_image" | tr -d ' ')
+    if [ -z "$oci_image" ]; then
+      print_info "Cancelled."
+      exit 0
+    fi
+    # Store the OCI image in config so remove-desk and other commands know it is custom
+    config_set_distro_field "$distro" "oci_image" "$oci_image"
+    config_set_distro_field "$distro" "custom_distro" "1"
   fi
 
   if is_proot_distro_v5; then
-    local image="$distro"
-    case "$distro" in
-      kali)      image="kalilinux/kali-rolling" ;;
-      void)      image="voidlinux/voidlinux" ;;
-      artix)     image="artixlinux/artixlinux" ;;
-      gentoo)    image="gentoo/stage3" ;;
-      rocky)     image="rockylinux/rockylinux" ;;
-      manjaro)   image="manjaronetwork/manjaro" ;;
-      oracle)    image="oraclelinux" ;;
-    esac
-    print_step "Installing ${distro} from OCI image '${image}' (this may take a few minutes)..."
-    log "Installing distro: $distro using image: $image"
-    if proot-distro install --name "$distro" "$image"; then
+    # Resolve known distros to their OCI images if no override provided
+    if [ -z "$oci_image" ]; then
+      case "$distro" in
+        kali)      oci_image="kalilinux/kali-rolling" ;;
+        void)      oci_image="voidlinux/voidlinux" ;;
+        artix)     oci_image="artixlinux/artixlinux" ;;
+        gentoo)    oci_image="gentoo/stage3" ;;
+        rocky)     oci_image="rockylinux/rockylinux" ;;
+        manjaro)   oci_image="manjaronetwork/manjaro" ;;
+        oracle)    oci_image="oraclelinux" ;;
+        *)         oci_image="$distro" ;;
+      esac
+    fi
+    print_step "Installing ${distro} from OCI image '${oci_image}' (this may take a few minutes)..."
+    log "Installing distro: $distro using image: $oci_image"
+    if proot-distro install --name "$distro" "$oci_image"; then
       print_success "${distro} installed successfully."
+      [ -n "$oci_image" ] && config_set_distro_field "$distro" "oci_image" "$oci_image"
     else
       print_error "Failed to install ${distro}. Check $LOG_FILE for details."
       exit 1
     fi
   else
+    if [ $is_known -eq 0 ]; then
+      print_error "Custom distro installs require proot-distro v5. Run: pkg upgrade proot-distro"
+      exit 1
+    fi
     print_step "Installing ${distro} (this may take a few minutes)..."
     log "Installing distro: $distro"
     if proot-distro install "$distro"; then
@@ -3890,7 +4004,7 @@ cmd_remove_desk() {
     apt)
       remove_cmd="to_purge=''
       for pattern in $purge_pkgs; do
-        pkgs=\$(dpkg-query -W -f='\${Package} \${Status}\n' \"\$pattern\" 2>/dev/null | grep 'install ok installed' | awk '{print \$1}')
+        pkgs=\$(dpkg-query -W -f='\${Package} \${Status}\n' \"\$pattern\" 2>/dev/null | grep -E 'install ok installed|half-installed|triggers-awaited|unpacked' | awk '{print \$1}')
         if [ -n \"\$pkgs\" ]; then
           to_purge=\"\$to_purge \$pkgs\"
         fi
@@ -3950,7 +4064,7 @@ cmd_remove_desk() {
     exit 1
   fi
   
-  # Verification and force double-insurance deletion of start command if it remains
+  # Verification: check if DE binary is gone, retry with full dpkg force-purge if not
   local uninstall_ok=0
   if ! de_is_installed "$distro" "$last_de"; then
     if [ $was_installed -eq 1 ]; then
@@ -3959,22 +4073,58 @@ cmd_remove_desk() {
       print_success "Purged package remnants for '${last_de}' from ${distro}."
     fi
     config_set_distro_field "$distro" "last_de" ""
+    config_set_distro_field "$distro" "installed_pkg_${last_de}" ""
     uninstall_ok=1
   else
-    print_warn "Some remnants of '${last_de}' were not removed automatically. Attempting force cleanup..."
-    local startcmd="${DE_STARTCMD[$last_de]}"
-    proot-distro login "$distro" -- rm -f "/usr/bin/$startcmd" "/usr/local/bin/$startcmd" "/bin/$startcmd" 2>/dev/null || true
-    
+    print_warn "Some remnants of '${last_de}' were not removed automatically. Running second-pass force cleanup..."
+    log "Second-pass cleanup triggered for $last_de in $distro"
+
+    if [ "$pm" = "apt" ]; then
+      local retry_purge_pkgs
+      retry_purge_pkgs=$(get_de_purge_packages "$distro" "$pm" "$last_de")
+      local retry_cmd="to_purge=''
+      for pattern in $retry_purge_pkgs; do
+        pkgs=\$(dpkg-query -W -f='\${Package} \${Status}\n' \"\$pattern\" 2>/dev/null | grep -E 'install ok|half-installed|triggers-awaited|unpacked' | awk '{print \$1}')
+        if [ -n \"\$pkgs\" ]; then
+          to_purge=\"\$to_purge \$pkgs\"
+        fi
+      done
+      if [ -n \"\$to_purge\" ]; then
+        for pkg in \$to_purge; do
+          for script in prerm postrm; do
+            f=\"/var/lib/dpkg/info/\${pkg}.\${script}\"
+            [ -f \"\$f\" ] && sed -i 's|^#!/bin/sh|#!/bin/sh\nexit 0|; s|^#!/bin/bash|#!/bin/bash\nexit 0|' \"\$f\"
+            for f_ma in /var/lib/dpkg/info/\${pkg}:*.\${script}; do
+              [ -f \"\$f_ma\" ] && sed -i 's|^#!/bin/sh|#!/bin/sh\nexit 0|; s|^#!/bin/bash|#!/bin/bash\nexit 0|' \"\$f_ma\"
+            done
+          done
+        done
+        env DEBIAN_FRONTEND=noninteractive dpkg --purge --force-all \$to_purge
+        env DEBIAN_FRONTEND=noninteractive apt-get install -f -y -o APT::Solver=internal -o APT::Get::AutomaticRemove=0 -o APT::Get::HideAutoRemove=1 --allow-downgrades || true
+        env DEBIAN_FRONTEND=noninteractive apt-get autoremove -y -o APT::Get::AutomaticRemove=1 || true
+      fi
+      local startcmd=\"\${DE_STARTCMD[$last_de]}\"
+      rm -f \"/usr/bin/\$startcmd\" \"/usr/local/bin/\$startcmd\" \"/bin/\$startcmd\" 2>/dev/null || true"
+      stub_distro_tools "$distro"
+      run_with_spinner "Second-pass force removal" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh bash -c "$retry_cmd" || true
+      restore_distro_tools "$distro"
+    else
+      local startcmd="${DE_STARTCMD[$last_de]}"
+      proot-distro login "$distro" -- rm -f "/usr/bin/$startcmd" "/usr/local/bin/$startcmd" "/bin/$startcmd" 2>/dev/null || true
+    fi
+
     if ! de_is_installed "$distro" "$last_de"; then
       if [ $was_installed -eq 1 ]; then
-        print_success "Desktop environment '${last_de}' removed from ${distro}."
+        print_success "Desktop environment '${last_de}' removed from ${distro} after second-pass cleanup."
       else
-        print_success "Purged package remnants for '${last_de}' from ${distro}."
+        print_success "Purged package remnants for '${last_de}' from ${distro} after second-pass cleanup."
       fi
       config_set_distro_field "$distro" "last_de" ""
+      config_set_distro_field "$distro" "installed_pkg_${last_de}" ""
       uninstall_ok=1
     else
-      print_error "Failed to completely uninstall the desktop environment binary."
+      print_error "Failed to completely remove '${last_de}' after two passes. Manual cleanup may be required."
+      log "Double-pass removal failed for $last_de in $distro"
       exit 1
     fi
   fi
@@ -4096,33 +4246,102 @@ cmd_help() {
   echo -e "${BOLD}${WHITE}groot-desk v${VERSION}${RESET} - Linux desktop manager for Termux"
   echo ""
   echo -e "${BOLD}Usage:${RESET}"
-  echo -e "  ${CYAN}groot-desk${RESET}                              Run the setup wizard"
-  echo -e "  ${CYAN}groot-desk install <distro>${RESET}             Install a specific distribution using correct OCI paths"
-  echo -e "  ${CYAN}groot-desk start${RESET}                        Wizard (same as above)"
-  echo -e "  ${CYAN}groot-desk start <distro>${RESET}               Start distro with last used or chosen DE"
-  echo -e "  ${CYAN}groot-desk start <distro> :<n>${RESET}          Start on a specific display number"
-  echo -e "  ${CYAN}groot-desk start <distro> :<n> <de>${RESET}     Start with a specific DE on a specific display"
-  echo -e "  ${CYAN}groot-desk start <distro> -y${RESET}            Start with no prompts (use all defaults)"
   echo ""
-  echo -e "  ${CYAN}groot-desk stop${RESET}                         Stop all running desktop sessions"
-  echo -e "  ${CYAN}groot-desk stop <distro>${RESET}                Stop session for a specific distro"
-  echo -e "  ${CYAN}groot-desk show${RESET}                         Refresh and show the desktop on all connected displays"
+  
+  echo -e "  ${CYAN}groot-desk${RESET}"
+  echo -e "      Run the interactive setup wizard."
   echo ""
-  echo -e "  ${CYAN}groot-desk restart${RESET}                      Restart all sessions"
-  echo -e "  ${CYAN}groot-desk restart <distro>${RESET}             Restart a specific distro session"
+
+  echo -e "  ${CYAN}groot-desk install <distro>${RESET}"
+  echo -e "      Install a known distribution (ubuntu, kali, debian...)."
   echo ""
-  echo -e "  ${CYAN}groot-desk status${RESET}                       Show running sessions"
-  echo -e "  ${CYAN}groot-desk list${RESET}                         List installed distros with their IDs and config"
-  echo -e "  ${CYAN}groot-desk logs${RESET}                         View the latest background troubleshooting logs"
+
+  echo -e "  ${CYAN}groot-desk install <name> <image:tag>${RESET}"
+  echo -e "      Install any custom OCI / Docker Hub image."
+  echo -e "      ${GRAY}Example: groot-desk install mydebian debian:12${RESET}"
+  echo -e "      ${GRAY}Example: groot-desk install mykali kalilinux/kali-rolling:latest${RESET}"
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk start${RESET}"
+  echo -e "      Run the setup wizard (same as above)."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk start <distro>${RESET}"
+  echo -e "      Start desktop session with last used or chosen desktop environment."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk start <distro> :<n>${RESET}"
+  echo -e "      Start session on a specific display port (e.g. :1, :2, :3)."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk start <distro> :<n> <de>${RESET}"
+  echo -e "      Start with a specific desktop environment on a specific display."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk start <distro> -y${RESET}"
+  echo -e "      Start with no prompts (use all default options)."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk stop${RESET}"
+  echo -e "      Stop all running desktop sessions."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk stop <distro>${RESET}"
+  echo -e "      Stop session for a specific distribution."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk show${RESET}"
+  echo -e "      Refresh and show the desktop on all connected displays."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk restart${RESET}"
+  echo -e "      Restart all active desktop sessions."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk restart <distro>${RESET}"
+  echo -e "      Restart a specific distribution session."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk status${RESET}"
+  echo -e "      Show all active running desktop sessions."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk list${RESET}"
+  echo -e "      List installed distributions with their IDs and configuration."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk logs${RESET}"
+  echo -e "      View the latest background troubleshooting logs."
+  echo ""
+
   echo -e "  ${CYAN}groot-desk mode <distro> [cpu|gpu|standalone|phone]${RESET}"
-  echo -e "                                  Set rendering (cpu/gpu) or connection (standalone/phone) mode"
-  echo -e "  ${CYAN}groot-desk reset <distro>${RESET}               Remove desktop configurations (keeps distro rootfs)"
-  echo -e "  ${CYAN}groot-desk remove-desk <distro>${RESET}          Uninstall desktop environment packages from container"
-  echo -e "  ${CYAN}groot-desk delete <distro>${RESET}              Completely remove distro container and configurations"
-  echo -e "  ${CYAN}groot-desk kill <pid|display|distro|all>${RESET} Kill a specific process, display port, distro, or all sessions"
-  echo -e "  ${CYAN}groot-desk uninstall${RESET}                    Remove groot-desk (keeps installed distros)"
-  echo -e "  ${CYAN}groot-desk help${RESET}                         Show this help"
+  echo -e "      Set rendering (cpu/gpu) or connection (standalone/phone) mode."
   echo ""
+
+  echo -e "  ${CYAN}groot-desk reset <distro>${RESET}"
+  echo -e "      Remove desktop configurations (keeps distribution rootfs intact)."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk remove-desk <distro>${RESET}"
+  echo -e "      Uninstall desktop environment packages from the container."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk delete <distro>${RESET}"
+  echo -e "      Completely remove the container and all configuration files."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk kill <pid|display|distro|all>${RESET}"
+  echo -e "      Forcefully kill a process, display port, distro, or all sessions."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk uninstall${RESET}"
+  echo -e "      Remove groot-desk itself (installed distributions are preserved)."
+  echo ""
+
+  echo -e "  ${CYAN}groot-desk help${RESET}"
+  echo -e "      Show this help menu."
+  echo ""
+
   echo -e "${BOLD}Desktop environments available:${RESET}"
   echo ""
   for de in "${DE_LIST[@]}"; do
@@ -4132,8 +4351,11 @@ cmd_help() {
     echo -e "  ${GRAY}  ${DE_SIZE[$de]} - ${DE_DESC[$de]}${RESET}"
     echo ""
   done
+
   echo -e "${BOLD}Examples:${RESET}"
   echo -e "  ${GRAY}groot-desk install kali${RESET}"
+  echo -e "  ${GRAY}groot-desk install mydebian debian:12${RESET}"
+  echo -e "  ${GRAY}groot-desk install mykali kalilinux/kali-rolling:latest${RESET}"
   echo -e "  ${GRAY}groot-desk start ubuntu${RESET}"
   echo -e "  ${GRAY}groot-desk start kali :2 xfce4${RESET}"
   echo -e "  ${GRAY}groot-desk start ubuntu -y${RESET}"
@@ -4200,7 +4422,7 @@ shift || true
 
 case "$COMMAND" in
   wizard|"")    run_wizard "" ;;
-  install)      cmd_install "${1:-}" ;;
+  install)      cmd_install "${1:-}" "${2:-}" ;;
   start)
     DISTRO="${1:-}"
     DISPLAY_ARG=""
