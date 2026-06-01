@@ -233,10 +233,19 @@ cleanup() {
   pkill -f "pulseaudio" 2>/dev/null
   # Restore stubbed icon cache scripts if backup exists
   if [ -n "${ACTIVE_DISTRO}" ]; then
-    proot-distro login "${ACTIVE_DISTRO}" -- bash -c "
+    proot-distro login "${ACTIVE_DISTRO}" -- bash -c '
+      rm -f /tmp/groot-run-with-dbus.sh
       [ -f /usr/sbin/update-icon-caches.bak ] && mv /usr/sbin/update-icon-caches.bak /usr/sbin/update-icon-caches
       [ -f /usr/bin/gtk-update-icon-cache.bak ] && mv /usr/bin/gtk-update-icon-cache.bak /usr/bin/gtk-update-icon-cache
-    " 2>/dev/null || true
+      if [ -f /usr/sbin/policy-rc.d.created_by_groot ]; then
+        rm -f /usr/sbin/policy-rc.d /usr/sbin/policy-rc.d.created_by_groot
+      fi
+      for cmd in updatedb updatedb.plocate systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl; do
+        for dir in /usr/bin /usr/sbin /bin /sbin; do
+          [ -f "$dir/$cmd.bak" ] && mv "$dir/$cmd.bak" "$dir/$cmd"
+        done
+      done
+    ' &>/dev/null || true
   fi
   # Kill any running proot sessions spawned by the script to release lock files
   pkill -f "proot-distro login" 2>/dev/null
@@ -629,11 +638,25 @@ optimize_distro_mirrors() {
             echo 'deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware' >> /etc/apt/sources.list
             echo 'deb http://mirrors.ocf.berkeley.edu/kali kali-rolling main contrib non-free non-free-firmware' >> /etc/apt/sources.list
             echo 'deb http://ftp.halifax.rwth-aachen.de/kali kali-rolling main contrib non-free non-free-firmware' >> /etc/apt/sources.list
+            mkdir -p /etc/apt/apt.conf.d
+            echo 'APT::Get::AutomaticRemove \"0\";' > /etc/apt/apt.conf.d/99-disable-autoremove
+            echo 'APT::Get::HideAutoRemove \"1\";' >> /etc/apt/apt.conf.d/99-disable-autoremove
           "
           ;;
         ubuntu)
           proot-distro login "$distro" -- bash -c "
             rm -f /etc/apt/sources.list.d/* 2>/dev/null || true
+            rm -f /etc/apt/preferences.d/* 2>/dev/null || true
+            mkdir -p /etc/apt/preferences.d
+            echo 'Package: *' > /etc/apt/preferences.d/99noble-force
+            echo 'Pin: release n=noble*' >> /etc/apt/preferences.d/99noble-force
+            echo 'Pin-Priority: 1001' >> /etc/apt/preferences.d/99noble-force
+            mkdir -p /etc/apt/apt.conf.d
+            echo 'APT::Get::AutomaticRemove \"0\";' > /etc/apt/apt.conf.d/99-disable-autoremove
+            echo 'APT::Get::HideAutoRemove \"1\";' >> /etc/apt/apt.conf.d/99-disable-autoremove
+            if [ -f /etc/apt/apt.conf.d/90_zsys_system_autosnapshot ]; then
+              sed -i 's/^DPkg::Pre-Invoke/# DPkg::Pre-Invoke/g; s/^DPkg::Post-Invoke/# DPkg::Post-Invoke/g' /etc/apt/apt.conf.d/90_zsys_system_autosnapshot
+            fi
             arch=\$(dpkg --print-architecture 2>/dev/null || echo 'arm64')
             if [ \"\$arch\" = \"amd64\" ] || [ \"\$arch\" = \"i386\" ]; then
               echo 'deb http://archive.ubuntu.com/ubuntu/ noble main restricted universe multiverse' > /etc/apt/sources.list
@@ -644,13 +667,20 @@ optimize_distro_mirrors() {
               echo 'deb http://ports.ubuntu.com/ubuntu-ports/ noble main restricted universe multiverse' > /etc/apt/sources.list
               echo 'deb http://ports.ubuntu.com/ubuntu-ports/ noble-updates main restricted universe multiverse' >> /etc/apt/sources.list
               echo 'deb http://ports.ubuntu.com/ubuntu-ports/ noble-security main restricted universe multiverse' >> /etc/apt/sources.list
-              echo 'deb http://mirror.math.princeton.edu/pub/ubuntu-ports/ noble main restricted universe multiverse' >> /etc/apt/sources.list
             fi
           "
           ;;
         debian)
           proot-distro login "$distro" -- bash -c "
             rm -f /etc/apt/sources.list.d/* 2>/dev/null || true
+            rm -f /etc/apt/preferences.d/* 2>/dev/null || true
+            mkdir -p /etc/apt/preferences.d
+            echo 'Package: *' > /etc/apt/preferences.d/99bookworm-force
+            echo 'Pin: release n=bookworm*' >> /etc/apt/preferences.d/99bookworm-force
+            echo 'Pin-Priority: 1001' >> /etc/apt/preferences.d/99bookworm-force
+            mkdir -p /etc/apt/apt.conf.d
+            echo 'APT::Get::AutomaticRemove \"0\";' > /etc/apt/apt.conf.d/99-disable-autoremove
+            echo 'APT::Get::HideAutoRemove \"1\";' >> /etc/apt/apt.conf.d/99-disable-autoremove
             echo 'deb http://deb.debian.org/debian/ bookworm main contrib non-free non-free-firmware' > /etc/apt/sources.list
             echo 'deb http://deb.debian.org/debian/ bookworm-updates main contrib non-free non-free-firmware' >> /etc/apt/sources.list
             echo 'deb http://deb.debian.org/debian-security/ bookworm-security main contrib non-free non-free-firmware' >> /etc/apt/sources.list
@@ -746,6 +776,91 @@ get_distro_pkg_manager() {
   fi
 }
 
+stub_distro_tools() {
+  local distro="$1"
+  local pm
+  pm=$(get_distro_pkg_manager "$distro")
+  if [ "$pm" = "apt" ]; then
+    proot-distro login "$distro" -- bash -c '
+      if [ -f /etc/apt/apt.conf.d/90_zsys_system_autosnapshot ]; then
+        sed -i "s/^DPkg::Pre-Invoke/# DPkg::Pre-Invoke/g; s/^DPkg::Post-Invoke/# DPkg::Post-Invoke/g" /etc/apt/apt.conf.d/90_zsys_system_autosnapshot
+      fi
+      if [ ! -f /usr/sbin/policy-rc.d ]; then
+        echo -e "#!/bin/sh\nexit 101" > /usr/sbin/policy-rc.d
+        chmod +x /usr/sbin/policy-rc.d
+        touch /usr/sbin/policy-rc.d.created_by_groot
+      fi
+      for cmd in updatedb updatedb.plocate systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl; do
+        for dir in /usr/bin /usr/sbin /bin /sbin; do
+          if [ -f "$dir/$cmd" ] && [ ! -f "$dir/$cmd.bak" ]; then
+            mv "$dir/$cmd" "$dir/$cmd.bak"
+            echo -e "#!/bin/sh\nexit 0" > "$dir/$cmd"
+            chmod +x "$dir/$cmd"
+          fi
+        done
+      done
+      
+      cat << "EOF" > /tmp/groot-run-with-dbus.sh
+#!/bin/sh
+# Start system bus
+mkdir -p /run/dbus /var/run/dbus
+rm -f /run/dbus/pid /var/run/dbus/pid
+if [ -x /usr/bin/dbus-daemon ]; then
+  /usr/bin/dbus-daemon --system --fork --nopidfile &>/dev/null
+elif [ -x /bin/dbus-daemon ]; then
+  /bin/dbus-daemon --system --fork --nopidfile &>/dev/null
+fi
+
+# Start session bus
+if [ -x /usr/bin/dbus-launch ]; then
+  eval $(/usr/bin/dbus-launch --sh-syntax)
+  export DBUS_SESSION_BUS_ADDRESS
+  export DBUS_SESSION_BUS_PID
+elif [ -x /bin/dbus-launch ]; then
+  eval $(/bin/dbus-launch --sh-syntax)
+  export DBUS_SESSION_BUS_ADDRESS
+  export DBUS_SESSION_BUS_PID
+fi
+
+# Run the command
+"$@"
+status=$?
+
+# Cleanup
+if [ -n "$DBUS_SESSION_BUS_PID" ]; then
+  kill "$DBUS_SESSION_BUS_PID" &>/dev/null
+fi
+pkill -9 -f "dbus-daemon" &>/dev/null
+rm -f /run/dbus/pid /var/run/dbus/pid /run/dbus/system_bus_socket /var/run/dbus/system_bus_socket
+
+exit $status
+EOF
+      chmod +x /tmp/groot-run-with-dbus.sh
+    ' &>/dev/null || true
+  fi
+}
+
+restore_distro_tools() {
+  local distro="$1"
+  local pm
+  pm=$(get_distro_pkg_manager "$distro")
+  if [ "$pm" = "apt" ]; then
+    proot-distro login "$distro" -- bash -c '
+      rm -f /tmp/groot-run-with-dbus.sh
+      if [ -f /usr/sbin/policy-rc.d.created_by_groot ]; then
+        rm -f /usr/sbin/policy-rc.d /usr/sbin/policy-rc.d.created_by_groot
+      fi
+      for cmd in updatedb updatedb.plocate systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl; do
+        for dir in /usr/bin /usr/sbin /bin /sbin; do
+          if [ -f "$dir/$cmd.bak" ]; then
+            mv "$dir/$cmd.bak" "$dir/$cmd"
+          fi
+        done
+      done
+    ' &>/dev/null || true
+  fi
+}
+
 init_de_metadata_for_distro() {
   local distro="$1"
   local pm=""
@@ -775,10 +890,10 @@ init_de_metadata_for_distro() {
   DE_DESC[kde]="Full-featured, highly customizable. Closest to a full desktop PC experience. Heavy."
   DE_TAG[kde]=""
 
-  DE_PACKAGE[gnome]="gnome-shell gnome-session gnome-terminal"
-  DE_STARTCMD[gnome]="gnome-session"
-  DE_SIZE[gnome]="~1.2 GB"
-  DE_DESC[gnome]="Modern, touch-friendly interface. High RAM usage but polished."
+  DE_PACKAGE[gnome]="gnome-session-flashback metacity gnome-panel"
+  DE_STARTCMD[gnome]="gnome-flashback"
+  DE_SIZE[gnome]="~800 MB"
+  DE_DESC[gnome]="GNOME desktop environment. Classic and lightweight fallback session."
   DE_TAG[gnome]=""
 
   DE_PACKAGE[gnome-flashback]="gnome-session-flashback metacity gnome-panel"
@@ -834,9 +949,9 @@ init_de_metadata_for_distro() {
         DE_SIZE[kde]="~2.0 GB"
         DE_DESC[kde]="Kali Linux custom themed KDE Plasma desktop. Heavy but beautiful."
 
-        DE_PACKAGE[gnome]="kali-desktop-gnome"
-        DE_SIZE[gnome]="~1.8 GB"
-        DE_DESC[gnome]="Kali Linux custom themed GNOME desktop. Polish and modern."
+        DE_PACKAGE[gnome]="gnome-session-flashback metacity gnome-panel"
+        DE_SIZE[gnome]="~800 MB"
+        DE_DESC[gnome]="Kali Linux GNOME desktop environment. Classic and lightweight."
 
         DE_PACKAGE[gnome-flashback]="gnome-session-flashback"
         DE_SIZE[gnome-flashback]="~1.0 GB"
@@ -863,9 +978,9 @@ init_de_metadata_for_distro() {
         DE_SIZE[kde]="~2.2 GB"
         DE_DESC[kde]="Ubuntu KDE Plasma desktop environment (Kubuntu). Full-featured and modern."
 
-        DE_PACKAGE[gnome]="ubuntu-desktop"
-        DE_SIZE[gnome]="~2.0 GB"
-        DE_DESC[gnome]="Ubuntu default GNOME desktop environment. Highly polished and feature-rich."
+        DE_PACKAGE[gnome]="gnome-session-flashback gnome-terminal metacity gnome-panel"
+        DE_SIZE[gnome]="~800 MB"
+        DE_DESC[gnome]="Ubuntu GNOME desktop environment. Fully compatible and polished."
 
         DE_PACKAGE[gnome-flashback]="gnome-session-flashback"
         DE_SIZE[gnome-flashback]="~1.0 GB"
@@ -896,9 +1011,9 @@ init_de_metadata_for_distro() {
         DE_SIZE[kde]="~1.8 GB"
         DE_DESC[kde]="Debian KDE Plasma desktop environment. Heavy and complete."
 
-        DE_PACKAGE[gnome]="task-gnome-desktop"
-        DE_SIZE[gnome]="~1.5 GB"
-        DE_DESC[gnome]="Debian GNOME desktop environment. Modern and clean."
+        DE_PACKAGE[gnome]="gnome-session-flashback gnome-terminal metacity gnome-panel"
+        DE_SIZE[gnome]="~800 MB"
+        DE_DESC[gnome]="Debian GNOME desktop environment. Classic and lightweight."
 
         DE_PACKAGE[gnome-flashback]="gnome-session-flashback"
         DE_SIZE[gnome-flashback]="~1.0 GB"
@@ -929,9 +1044,9 @@ init_de_metadata_for_distro() {
       DE_SIZE[kde]="~800 MB"
       DE_DESC[kde]="Alpine KDE Plasma desktop. Heavy but functional."
 
-      DE_PACKAGE[gnome]="gnome gnome-terminal"
-      DE_SIZE[gnome]="~700 MB"
-      DE_DESC[gnome]="Alpine GNOME desktop environment. polished."
+      DE_PACKAGE[gnome]="gnome-flashback"
+      DE_SIZE[gnome]="~500 MB"
+      DE_DESC[gnome]="Alpine GNOME desktop environment. Classic and lightweight."
 
       DE_PACKAGE[gnome-flashback]="gnome-flashback"
       DE_SIZE[gnome-flashback]="~500 MB"
@@ -967,9 +1082,9 @@ init_de_metadata_for_distro() {
       DE_SIZE[kde]="~1.2 GB"
       DE_DESC[kde]="Arch KDE Plasma desktop. Modern and highly customizable."
 
-      DE_PACKAGE[gnome]="gnome gnome-shell"
-      DE_SIZE[gnome]="~1.0 GB"
-      DE_DESC[gnome]="Arch GNOME desktop environment. Touch-friendly."
+      DE_PACKAGE[gnome]="gnome-flashback"
+      DE_SIZE[gnome]="~800 MB"
+      DE_DESC[gnome]="Arch GNOME desktop environment. Classic and lightweight."
 
       DE_PACKAGE[gnome-flashback]="gnome-flashback"
       DE_SIZE[gnome-flashback]="~800 MB"
@@ -1005,9 +1120,9 @@ init_de_metadata_for_distro() {
       DE_SIZE[kde]="~1.8 GB"
       DE_DESC[kde]="Fedora KDE Plasma desktop environment group."
 
-      DE_PACKAGE[gnome]="@gnome-desktop-environment"
-      DE_SIZE[gnome]="~1.5 GB"
-      DE_DESC[gnome]="Fedora GNOME desktop environment group."
+      DE_PACKAGE[gnome]="gnome-flashback"
+      DE_SIZE[gnome]="~1.2 GB"
+      DE_DESC[gnome]="Fedora GNOME desktop environment. Classic and lightweight."
 
       DE_PACKAGE[gnome-flashback]="gnome-flashback"
       DE_SIZE[gnome-flashback]="~1.2 GB"
@@ -1043,9 +1158,9 @@ init_de_metadata_for_distro() {
       DE_SIZE[kde]="~1.0 GB"
       DE_DESC[kde]="Void KDE Plasma desktop. Heavy but full-featured."
 
-      DE_PACKAGE[gnome]="gnome gnome-terminal"
-      DE_SIZE[gnome]="~900 MB"
-      DE_DESC[gnome]="Void GNOME desktop. polished."
+      DE_PACKAGE[gnome]="gnome-flashback"
+      DE_SIZE[gnome]="~700 MB"
+      DE_DESC[gnome]="Void GNOME desktop. Classic and lightweight."
 
       DE_PACKAGE[gnome-flashback]="gnome-flashback"
       DE_SIZE[gnome-flashback]="~700 MB"
@@ -1092,7 +1207,7 @@ get_de_purge_packages() {
   case "$de" in
     xfce4)
       case "$pm" in
-        apt)    pkgs="$pkgs xfce4* xfce4-goodies* xfce4-session* xfce4-terminal* xfwm4* xfdesktop4* xfce4-panel* kali-desktop-xfce* xubuntu-desktop* task-xfce-desktop*" ;;
+        apt)    pkgs="$pkgs xfce4* xfce4-goodies* xfce4-session* xfce4-terminal* xfwm4* xfdesktop4* xfce4-panel* kali-desktop-xfce* xubuntu-desktop* task-xfce-desktop* thunar* xfconf* libxfce4* exo-utils*" ;;
         apk)    pkgs="$pkgs xfce4* xfce4-terminal* xfce4-screensaver*" ;;
         pacman) pkgs="$pkgs xfce4 xfce4-goodies" ;;
         dnf)    pkgs="$pkgs @xfce-desktop-environment" ;;
@@ -1102,7 +1217,7 @@ get_de_purge_packages() {
       ;;
     lxqt)
       case "$pm" in
-        apt)    pkgs="$pkgs lxqt* lubuntu-desktop* task-lxqt-desktop* kali-desktop-lxqt*" ;;
+        apt)    pkgs="$pkgs lxqt* lubuntu-desktop* task-lxqt-desktop* kali-desktop-lxqt* pcmanfm-qt* qterminal* lximage-qt* obconf-qt*" ;;
         apk)    pkgs="$pkgs lxqt-desktop* lxqt-common*" ;;
         pacman) pkgs="$pkgs lxqt" ;;
         dnf)    pkgs="$pkgs @lxqt-desktop-environment" ;;
@@ -1112,7 +1227,7 @@ get_de_purge_packages() {
       ;;
     mate)
       case "$pm" in
-        apt)    pkgs="$pkgs mate-desktop* mate-desktop-environment* ubuntu-mate-desktop* task-mate-desktop* kali-desktop-mate*" ;;
+        apt)    pkgs="$pkgs mate-desktop* mate-desktop-environment* ubuntu-mate-desktop* task-mate-desktop* kali-desktop-mate* caja* pluma* marco* atril* engrampa*" ;;
         apk)    pkgs="$pkgs mate-desktop* mate-icon-theme* mate-terminal* mate-session-manager*" ;;
         pacman) pkgs="$pkgs mate mate-extra" ;;
         dnf)    pkgs="$pkgs @mate-desktop-environment" ;;
@@ -1122,7 +1237,7 @@ get_de_purge_packages() {
       ;;
     kde)
       case "$pm" in
-        apt)    pkgs="$pkgs kde-plasma-desktop* kubuntu-desktop* task-kde-desktop* kali-desktop-kde* plasma-desktop*" ;;
+        apt)    pkgs="$pkgs kde-plasma-desktop* kubuntu-desktop* task-kde-desktop* kali-desktop-kde* plasma-desktop* plasma-workspace* kwin* dolphin* konsole*" ;;
         apk)    pkgs="$pkgs plasma-desktop*" ;;
         pacman) pkgs="$pkgs plasma-desktop" ;;
         dnf)    pkgs="$pkgs @kde-desktop-environment" ;;
@@ -1132,12 +1247,12 @@ get_de_purge_packages() {
       ;;
     gnome)
       case "$pm" in
-        apt)    pkgs="$pkgs gnome-session* gnome-terminal* ubuntu-desktop* task-gnome-desktop* kali-desktop-gnome* gnome-core*" ;;
-        apk)    pkgs="$pkgs gnome* gnome-terminal*" ;;
-        pacman) pkgs="$pkgs gnome gnome-extra" ;;
-        dnf)    pkgs="$pkgs @gnome-desktop-environment" ;;
-        xbps)   pkgs="$pkgs gnome gnome-terminal" ;;
-        emerge) pkgs="$pkgs gnome-base/gnome" ;;
+        apt)    pkgs="$pkgs gnome-session* gnome-terminal* ubuntu-desktop* task-gnome-desktop* kali-desktop-gnome* gnome-core* gnome-panel* metacity* gnome-flashback* nautilus* plank*" ;;
+        apk)    pkgs="$pkgs gnome* gnome-terminal* plank*" ;;
+        pacman) pkgs="$pkgs gnome gnome-extra plank" ;;
+        dnf)    pkgs="$pkgs @gnome-desktop-environment plank" ;;
+        xbps)   pkgs="$pkgs gnome gnome-terminal plank" ;;
+        emerge) pkgs="$pkgs gnome-base/gnome gnome-extra/plank" ;;
       esac
       ;;
     budgie)
@@ -1336,6 +1451,7 @@ de_is_installed() {
 
 install_desktop_environment() {
   local distro="$1" de="$2" auto_yes="$3"
+  ACTIVE_DISTRO="$distro"
 
   # Initialize desktop environment metadata for this specific distro
   init_de_metadata_for_distro "$distro"
@@ -1371,12 +1487,13 @@ install_desktop_environment() {
 
   case "$pm" in
     apt)
+      stub_distro_tools "$distro"
       # Force-clean cached package lists to ensure fresh, non-404 mirror updates on rolling-release distros
       run_with_spinner "Cleaning package index cache" proot-distro login "$distro" -- bash -c \
         "rm -rf /var/lib/apt/lists/* && env DEBIAN_FRONTEND=noninteractive apt-get clean"
       
       run_with_spinner "Updating package lists inside ${distro}" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get update -y -o Acquire::http::No-Cache=true -o Acquire::http::Max-Age=0 || true
-      install_cmd="env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y -o Dpkg::Options::=\"--force-confdef\" -o Dpkg::Options::=\"--force-confold\" $pkg"
+      install_cmd="env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y -o Dpkg::Options::=\"--force-confdef\" -o Dpkg::Options::=\"--force-confold\" -o APT::Solver=internal --fix-broken --fix-missing --allow-downgrades $pkg"
       ;;
     apk)
       run_with_spinner "Cleaning package index cache" proot-distro login "$distro" -- rm -rf /var/cache/apk/*
@@ -1422,7 +1539,11 @@ install_desktop_environment() {
       ;;
   esac
 
-  run_with_spinner "Downloading and installing packages" proot-distro login "$distro" -- bash -c "$install_cmd"
+  if [ "$pm" = "apt" ]; then
+    run_with_spinner "Downloading and installing packages" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh bash -c "$install_cmd"
+  else
+    run_with_spinner "Downloading and installing packages" proot-distro login "$distro" -- bash -c "$install_cmd"
+  fi
   local status=$?
 
   local repair_attempted=0
@@ -1434,10 +1555,12 @@ install_desktop_environment() {
     case "$pm" in
       apt)
         run_with_spinner "Clearing package manager locks" proot-distro login "$distro" -- rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock 2>/dev/null
-        run_with_spinner "Configuring dpkg database" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confdef --force-confold
+        run_with_spinner "Configuring dpkg database" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confdef --force-confold
+        run_with_spinner "Fixing broken dependencies" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive apt-get install -f -y -o APT::Solver=internal -o APT::Get::AutomaticRemove=0 -o APT::Get::HideAutoRemove=1 --allow-downgrades
+        run_with_spinner "Upgrading base packages" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y --fix-broken -o APT::Solver=internal -o APT::Get::AutomaticRemove=0 -o APT::Get::HideAutoRemove=1 --allow-downgrades
         run_with_spinner "Updating packages (retry)" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get update -y -o Acquire::http::No-Cache=true -o Acquire::http::Max-Age=0 || true
-        local retry_cmd="${install_cmd} --fix-missing"
-        run_with_spinner "Retrying installation" proot-distro login "$distro" -- bash -c "$retry_cmd"
+        local retry_cmd="${install_cmd}"
+        run_with_spinner "Retrying installation" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh bash -c "$retry_cmd"
         status=$?
         ;;
       pacman)
@@ -1469,11 +1592,11 @@ install_desktop_environment() {
 
     case "$pm" in
       apt)
-        run_with_spinner "Purging broken package state" proot-distro login "$distro" -- bash -c \
+        run_with_spinner "Purging broken package state" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh bash -c \
           "to_purge=''; for pattern in $purge_pkgs; do pkgs=\$(dpkg-query -W -f='\${Package}\n' \"\$pattern\" 2>/dev/null | awk '{print \$1}'); if [ -n \"\$pkgs\" ]; then to_purge=\"\$to_purge \$pkgs\"; fi; done; if [ -n \"\$to_purge\" ]; then env DEBIAN_FRONTEND=noninteractive apt-get purge -y --allow-remove-essential \$to_purge; fi"
-        run_with_spinner "Auto-removing packages" proot-distro login "$distro" -- bash -c "env DEBIAN_FRONTEND=noninteractive apt-get autoremove -y || true"
+        run_with_spinner "Auto-removing packages" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh bash -c "env DEBIAN_FRONTEND=noninteractive apt-get autoremove -y || true"
         run_with_spinner "Re-updating package lists" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get update -y -o Acquire::http::No-Cache=true -o Acquire::http::Max-Age=0 || true
-        run_with_spinner "Re-installing desktop packages" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y --reinstall -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" $pkg
+        run_with_spinner "Re-installing desktop packages" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y --reinstall -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o APT::Solver=internal --fix-broken --fix-missing --allow-downgrades $pkg
         status=$?
         ;;
       pacman)
@@ -1511,7 +1634,7 @@ install_desktop_environment() {
     local fallback_cmd=""
     case "$pm" in
       apt)
-        fallback_cmd="env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y -o Dpkg::Options::=\"--force-confdef\" -o Dpkg::Options::=\"--force-confold\" $generic_pkg"
+        fallback_cmd="env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y -o Dpkg::Options::=\"--force-confdef\" -o Dpkg::Options::=\"--force-confold\" -o APT::Solver=internal --fix-broken --fix-missing --allow-downgrades $generic_pkg"
         ;;
       apk)
         fallback_cmd="apk add --no-cache $generic_pkg"
@@ -1531,11 +1654,17 @@ install_desktop_environment() {
     esac
 
     if [ -n "$fallback_cmd" ]; then
-      run_with_spinner "Installing fallback packages" proot-distro login "$distro" -- bash -c "$fallback_cmd"
+      if [ "$pm" = "apt" ]; then
+        run_with_spinner "Installing fallback packages" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh bash -c "$fallback_cmd"
+      else
+        run_with_spinner "Installing fallback packages" proot-distro login "$distro" -- bash -c "$fallback_cmd"
+      fi
       status=$?
       
       if [ $status -ne 0 ] && [ "$pm" = "apt" ]; then
-        run_with_spinner "Retrying fallback packages" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get install -y --fix-missing $generic_pkg
+        run_with_spinner "Fixing broken dependencies" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive apt-get install -f -y -o APT::Solver=internal -o APT::Get::AutomaticRemove=0 -o APT::Get::HideAutoRemove=1 --allow-downgrades
+        run_with_spinner "Upgrading base packages" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y --fix-broken -o APT::Solver=internal -o APT::Get::AutomaticRemove=0 -o APT::Get::HideAutoRemove=1 --allow-downgrades
+        run_with_spinner "Retrying fallback packages" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive apt-get install -y --fix-broken --fix-missing -o APT::Solver=internal --allow-downgrades $generic_pkg
         status=$?
       fi
     fi
@@ -1550,6 +1679,7 @@ install_desktop_environment() {
       print_success "${de} installed successfully."
     fi
     log "DE installed: $de in $distro"
+    restore_distro_tools "$distro"
     return 0
   else
     # Diagnostic reporting
@@ -1583,6 +1713,7 @@ install_desktop_environment() {
     echo "    proot-distro login $distro"
     echo "    (then run your package manager update and install commands)"
     echo ""
+    restore_distro_tools "$distro"
     exit 1
   fi
 }
@@ -1997,6 +2128,7 @@ launch_desktop() {
 
     case "$pm" in
       apt)
+        stub_distro_tools "$distro"
         run_with_spinner "Clearing locks" proot-distro login "$distro" -- rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock 2>/dev/null
         
         proot-distro login "$distro" -- bash -c "
@@ -2012,25 +2144,23 @@ launch_desktop() {
           fi
         " &>/dev/null || true
 
-        run_with_spinner "Configuring dpkg" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 dpkg --configure -a --force-confdef --force-confold
-        if [ $? -ne 0 ]; then
-          proot-distro login "$distro" -- bash -c "
-            [ -f /usr/sbin/update-icon-caches.bak ] && mv /usr/sbin/update-icon-caches.bak /usr/sbin/update-icon-caches
-            [ -f /usr/bin/gtk-update-icon-cache.bak ] && mv /usr/bin/gtk-update-icon-cache.bak /usr/bin/gtk-update-icon-cache
-          " &>/dev/null || true
-          print_error "Dpkg configuration failed."
-          exit 1
-        fi
+        run_with_spinner "Configuring dpkg" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 dpkg --configure -a --force-confdef --force-confold || true
+        proot-distro login "$distro" -- bash -c "
+          [ -f /usr/sbin/update-icon-caches.bak ] && mv /usr/sbin/update-icon-caches.bak /usr/sbin/update-icon-caches
+          [ -f /usr/bin/gtk-update-icon-cache.bak ] && mv /usr/bin/gtk-update-icon-cache.bak /usr/bin/gtk-update-icon-cache
+        " &>/dev/null || true
 
         run_with_spinner "Updating packages" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get update -y -o Acquire::http::Timeout="10" -o Acquire::http::No-Cache=true -o Acquire::http::Max-Age=0 || true
+        run_with_spinner "Fixing broken dependencies" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get install -f -y -o APT::Solver=internal -o APT::Get::AutomaticRemove=0 -o APT::Get::HideAutoRemove=1 --allow-downgrades
+        run_with_spinner "Upgrading base packages" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y --fix-broken -o APT::Solver=internal -o APT::Get::AutomaticRemove=0 -o APT::Get::HideAutoRemove=1 --allow-downgrades
         
         if [ $dbus_missing -eq 1 ]; then
           local dbus_status=0
-          run_with_spinner "Installing dbus-x11" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dbus-x11
+          run_with_spinner "Installing dbus-x11" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o APT::Solver=internal --fix-broken --fix-missing --allow-downgrades dbus-x11
           dbus_status=$?
           if [ $dbus_status -ne 0 ]; then
             print_warn "dbus-x11 installation failed. Attempting fallback dbus package..."
-            run_with_spinner "Installing dbus" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y --fix-missing -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dbus
+            run_with_spinner "Installing dbus" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o APT::Solver=internal --fix-broken --fix-missing --allow-downgrades dbus
             dbus_status=$?
           fi
           if [ $dbus_status -ne 0 ] || ! proot-distro login "$distro" -- sh -c "command -v dbus-launch" &>/dev/null; then
@@ -2038,16 +2168,17 @@ launch_desktop() {
               [ -f /usr/sbin/update-icon-caches.bak ] && mv /usr/sbin/update-icon-caches.bak /usr/sbin/update-icon-caches
               [ -f /usr/bin/gtk-update-icon-cache.bak ] && mv /usr/bin/gtk-update-icon-cache.bak /usr/bin/gtk-update-icon-cache
             " &>/dev/null || true
+            restore_distro_tools "$distro"
             print_error "Failed to install D-Bus system tool."
             exit 1
           fi
         fi
         
         if [ $pulse_missing -eq 1 ]; then
-          run_with_spinner "Installing pulseaudio" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" pulseaudio
+          run_with_spinner "Installing pulseaudio" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o APT::Solver=internal --fix-broken --fix-missing --allow-downgrades pulseaudio
           if [ $? -ne 0 ]; then
             print_warn "pulseaudio installation failed. Retrying..."
-            run_with_spinner "Installing pulseaudio (retry)" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get install -y --fix-missing pulseaudio
+            run_with_spinner "Installing pulseaudio (retry)" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get install -y -o APT::Solver=internal --fix-broken --fix-missing --allow-downgrades pulseaudio
             if [ $? -ne 0 ]; then
               print_warn "Failed to install PulseAudio. Audio will be disabled."
             fi
@@ -2058,6 +2189,7 @@ launch_desktop() {
           [ -f /usr/sbin/update-icon-caches.bak ] && mv /usr/sbin/update-icon-caches.bak /usr/sbin/update-icon-caches
           [ -f /usr/bin/gtk-update-icon-cache.bak ] && mv /usr/bin/gtk-update-icon-cache.bak /usr/bin/gtk-update-icon-cache
         " &>/dev/null || true
+        restore_distro_tools "$distro"
         ;;
       apk)
         run_with_spinner "Updating packages" proot-distro login "$distro" -- apk update
@@ -2177,30 +2309,14 @@ launch_desktop() {
     lxqt)     startcmd="dbus-launch --exit-with-session startlxqt" ;;
     mate)     startcmd="dbus-launch --exit-with-session mate-session" ;;
     kde)      startcmd="dbus-run-session -- bash -c 'export XDG_SESSION_ID=1; export XDG_SESSION_TYPE=x11; export XDG_SESSION_CLASS=user; export XDG_SEAT=seat0; export XDG_VTNR=1; export XDG_RUNTIME_DIR=/run/user/\$(id -u); mkdir -p \$XDG_RUNTIME_DIR && chmod 700 \$XDG_RUNTIME_DIR; if [ -f /usr/local/lib/libfake-logind.so ]; then export LD_PRELOAD=/usr/local/lib/libfake-logind.so; fi; startplasma-x11'" ;;
-    gnome)    startcmd="bash -c '
-      service dbus start 2>/dev/null || dbus-daemon --system --fork 2>/dev/null || true
-      sleep 1
-      export XDG_SESSION_ID=1
-      export XDG_SESSION_TYPE=x11
-      export XDG_SESSION_CLASS=user
-      export XDG_SEAT=seat0
-      export XDG_VTNR=1
-      uid=\$(id -u)
-      export XDG_RUNTIME_DIR=/run/user/\$uid
-      mkdir -p \$XDG_RUNTIME_DIR && chmod 700 \$XDG_RUNTIME_DIR
-      export GNOME_SHELL_SESSION_MODE=gnome
-      export MUTTER_DEBUG_DISABLE_SHARED_MEMORY=1
-      export NO_AT_BRIDGE=1
-      if [ -f /usr/local/lib/libfake-logind.so ]; then export LD_PRELOAD=/usr/local/lib/libfake-logind.so; fi;
-      dbus-run-session -- gnome-shell'" ;;
-    gnome-flashback) startcmd="XDG_CURRENT_DESKTOP=GNOME-Flashback:GNOME XDG_MENU_PREFIX=gnome-flashback- dbus-launch --exit-with-session bash -c 'metacity & gnome-panel & (sleep 2 && command -v plank &>/dev/null && plank) & (gnome-flashback || /usr/lib/gnome-flashback/gnome-flashback || /usr/libexec/gnome-flashback) & wait'" ;;
+    gnome|gnome-flashback) startcmd="XDG_CURRENT_DESKTOP=GNOME-Flashback:GNOME XDG_MENU_PREFIX=gnome-flashback- dbus-launch --exit-with-session bash -c 'metacity & gnome-panel & (sleep 2 && command -v plank &>/dev/null && plank) & (gnome-flashback || /usr/lib/gnome-flashback/gnome-flashback || /usr/libexec/gnome-flashback) & wait'" ;;
     budgie)   startcmd="dbus-launch --exit-with-session budgie-desktop" ;;
     cinnamon) startcmd="dbus-launch --exit-with-session cinnamon-session" ;;
     openbox)  startcmd="dbus-launch --exit-with-session openbox-session" ;;
     *)        startcmd="dbus-launch --exit-with-session ${DE_STARTCMD[$de]}" ;;
   esac
 
-  if [ "$de" = "gnome-flashback" ]; then
+  if [ "$de" = "gnome" ] || [ "$de" = "gnome-flashback" ]; then
     # 1. Ensure Plank binary is installed inside the container
     if ! proot-distro login "$distro" -- command -v plank &>/dev/null; then
       print_step "Plank dock not found inside ${distro}. Installing Plank..."
@@ -2533,7 +2649,7 @@ EOF
           case "$pm" in
             apt)
               proot-distro login "$distro" -- rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock 2>/dev/null
-              inst_cmd="env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y -o Dpkg::Options::=\"--force-confdef\" -o Dpkg::Options::=\"--force-confold\" ${fb_pkg} gnome-terminal"
+              inst_cmd="env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y -o Dpkg::Options::=\"--force-confdef\" -o Dpkg::Options::=\"--force-confold\" -o APT::Solver=internal --fix-broken --fix-missing --allow-downgrades ${fb_pkg} gnome-terminal"
               ;;
             apk)    inst_cmd="apk add --no-cache ${fb_pkg} gnome-terminal" ;;
             pacman) inst_cmd="pacman -S --noconfirm --needed ${fb_pkg}" ;;
@@ -2836,7 +2952,7 @@ run_wizard() {
     fi
   fi
 
-  cmd_start "$distro"
+  cmd_start "$distro" "" "$de" "$auto_yes"
 }
 
 # -----------------------------------------------------------------------------
@@ -3682,6 +3798,7 @@ cmd_uninstall() {
 # -----------------------------------------------------------------------------
 cmd_remove_desk() {
   local distro="$1"
+  ACTIVE_DISTRO="$distro"
   local de
   if [ -z "$distro" ]; then
     print_error "Specify a distribution to remove the desktop from. Example: groot-desk remove-de kali"
@@ -3700,25 +3817,67 @@ cmd_remove_desk() {
   local last_de
   last_de=$(config_get_distro_field "$distro" "last_de")
 
-  if [ -z "$last_de" ]; then
-    print_warn "No recorded desktop environment for ${distro}."
-    # Let the user choose which DE package to try to remove
-    echo -e "${WHITE}Choose which desktop environment to remove:${RESET}"
-    local i=1
-    for de in "${DE_LIST[@]}"; do
-      echo -e "  [${i}] ${de}"
-      ((i++))
-    done
-    local choice=""
-    read -rp "$(echo -e "${CYAN}Select [1-${#DE_LIST[@]}]: ${RESET}")" choice
-    choice=$(echo "$choice" | tr -d '\r' | tr -d ' ')
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#DE_LIST[@]}" ]; then
-      last_de="${DE_LIST[$((choice - 1))]}"
-    else
-      print_error "Invalid selection."
-      exit 1
+  # Always list desktop environments and let user select which one to remove
+  echo -e "${WHITE}Choose which desktop environment to remove from ${distro}:${RESET}"
+  echo ""
+  local i=1
+  local default_choice=""
+  for de in "${DE_LIST[@]}"; do
+    local status_str=""
+    if de_is_installed "$distro" "$de"; then
+      status_str=" ${GREEN}(installed)${RESET}"
+    fi
+    local default_marker=""
+    if [ "$de" = "$last_de" ]; then
+      default_marker=" ${GRAY}[last used]${RESET}"
+      default_choice="$de"
+    fi
+    echo -e "  ${BOLD}[$i]${RESET} ${WHITE}${de}${RESET}${status_str}${default_marker}"
+    ((i++))
+  done
+  echo ""
+
+  local choice=""
+  local prompt_lbl="Select [1-${#DE_LIST[@]}]: "
+  if [ -n "$default_choice" ]; then
+    prompt_lbl="Select [1-${#DE_LIST[@]}] (enter for ${default_choice}): "
+  fi
+
+  read -rp "$(echo -e "${CYAN}${prompt_lbl}${RESET}")" choice
+  choice=$(echo "$choice" | tr -d '\r' | tr -d ' ')
+  if [ -z "$choice" ] && [ -n "$default_choice" ]; then
+    last_de="$default_choice"
+  elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#DE_LIST[@]}" ]; then
+    last_de="${DE_LIST[$((choice - 1))]}"
+  else
+    print_error "Invalid selection."
+    exit 1
+  fi
+
+  local was_installed=0
+  if de_is_installed "$distro" "$last_de"; then
+    was_installed=1
+  fi
+
+  if [ $was_installed -eq 0 ]; then
+    print_warn "Desktop environment '${last_de}' does not appear to be fully installed inside ${distro}."
+    read -rp "$(echo -e "${YELLOW}Attempt to purge any package remnants for ${last_de}? [y/N]: ${RESET}")" confirm
+    confirm="${confirm:-N}"
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+      print_info "Cancelled."
+      return
+    fi
+  else
+    print_warn "This will attempt to uninstall ${last_de} and its dependencies from ${distro}."
+    read -rp "$(echo -e "${YELLOW}Continue? [y/N]: ${RESET}")" confirm
+    confirm="${confirm:-N}"
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+      print_info "Cancelled."
+      return
     fi
   fi
+
+  cmd_stop "$distro"
 
   local pm
   pm=$(get_distro_pkg_manager "$distro")
@@ -3727,19 +3886,33 @@ cmd_remove_desk() {
   local purge_pkgs
   purge_pkgs=$(get_de_purge_packages "$distro" "$pm" "$last_de")
 
-  print_warn "This will attempt to uninstall ${last_de} and its dependencies from ${distro}."
-  read -rp "$(echo -e "${YELLOW}Continue? [y/N]: ${RESET}")" confirm
-  confirm="${confirm:-N}"
-  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    print_info "Cancelled."
-    return
-  fi
-
-  cmd_stop "$distro"
-
   case "$pm" in
     apt)
-      remove_cmd="to_purge=''; for pattern in $purge_pkgs; do pkgs=\$(dpkg-query -W -f='\${Package}\n' \"\$pattern\" 2>/dev/null | awk '{print \$1}'); if [ -n \"\$pkgs\" ]; then to_purge=\"\$to_purge \$pkgs\"; fi; done; if [ -n \"\$to_purge\" ]; then env DEBIAN_FRONTEND=noninteractive apt-get purge -y --allow-remove-essential \$to_purge; fi; env DEBIAN_FRONTEND=noninteractive apt-get autoremove -y || true"
+      remove_cmd="to_purge=''
+      for pattern in $purge_pkgs; do
+        pkgs=\$(dpkg-query -W -f='\${Package} \${Status}\n' \"\$pattern\" 2>/dev/null | grep 'install ok installed' | awk '{print \$1}')
+        if [ -n \"\$pkgs\" ]; then
+          to_purge=\"\$to_purge \$pkgs\"
+        fi
+      done
+      if [ -n \"\$to_purge\" ]; then
+        for pkg in \$to_purge; do
+          for script in prerm postrm; do
+            f=\"/var/lib/dpkg/info/\${pkg}.\${script}\"
+            if [ -f \"\$f\" ]; then
+              sed -i 's|^#!/bin/sh|#!/bin/sh\nexit 0|; s|^#!/bin/bash|#!/bin/bash\nexit 0|' \"\$f\"
+            fi
+            for f_ma in /var/lib/dpkg/info/\${pkg}:*.\${script}; do
+              if [ -f \"\$f_ma\" ]; then
+                sed -i 's|^#!/bin/sh|#!/bin/sh\nexit 0|; s|^#!/bin/bash|#!/bin/bash\nexit 0|' \"\$f_ma\"
+              fi
+            done
+          done
+        done
+        env DEBIAN_FRONTEND=noninteractive dpkg --purge \$to_purge
+        env DEBIAN_FRONTEND=noninteractive apt-get install -f -y -o APT::Solver=internal -o APT::Get::AutomaticRemove=0 -o APT::Get::HideAutoRemove=1 --allow-downgrades
+        env DEBIAN_FRONTEND=noninteractive apt-get autoremove -y -o APT::Get::AutomaticRemove=1
+      fi"
       ;;
     apk)
       remove_cmd="apk del $purge_pkgs || true"
@@ -3761,24 +3934,85 @@ cmd_remove_desk() {
   print_step "Uninstalling packages inside ${distro}..."
   log "Removing DE package matching: $purge_pkgs from $distro"
   
-  run_with_spinner "Uninstalling desktop packages" proot-distro login "$distro" -- bash -c "$remove_cmd"
+  stub_distro_tools "$distro"
+
+  local uninstall_status=0
+  if [ "$pm" = "apt" ]; then
+    run_with_spinner "Uninstalling desktop packages" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh bash -c "$remove_cmd" || uninstall_status=$?
+  else
+    run_with_spinner "Uninstalling desktop packages" proot-distro login "$distro" -- bash -c "$remove_cmd" || uninstall_status=$?
+  fi
+
+  restore_distro_tools "$distro"
+
+  if [ $uninstall_status -ne 0 ]; then
+    print_error "Failed to uninstall desktop environment packages."
+    exit 1
+  fi
   
   # Verification and force double-insurance deletion of start command if it remains
+  local uninstall_ok=0
   if ! de_is_installed "$distro" "$last_de"; then
-    print_success "Desktop environment '${last_de}' removed from ${distro}."
+    if [ $was_installed -eq 1 ]; then
+      print_success "Desktop environment '${last_de}' removed from ${distro}."
+    else
+      print_success "Purged package remnants for '${last_de}' from ${distro}."
+    fi
     config_set_distro_field "$distro" "last_de" ""
+    uninstall_ok=1
   else
     print_warn "Some remnants of '${last_de}' were not removed automatically. Attempting force cleanup..."
     local startcmd="${DE_STARTCMD[$last_de]}"
     proot-distro login "$distro" -- rm -f "/usr/bin/$startcmd" "/usr/local/bin/$startcmd" "/bin/$startcmd" 2>/dev/null || true
     
     if ! de_is_installed "$distro" "$last_de"; then
-      print_success "Desktop environment '${last_de}' removed from ${distro}."
+      if [ $was_installed -eq 1 ]; then
+        print_success "Desktop environment '${last_de}' removed from ${distro}."
+      else
+        print_success "Purged package remnants for '${last_de}' from ${distro}."
+      fi
       config_set_distro_field "$distro" "last_de" ""
+      uninstall_ok=1
     else
       print_error "Failed to completely uninstall the desktop environment binary."
       exit 1
     fi
+  fi
+
+  if [ $uninstall_ok -eq 1 ]; then
+    run_with_spinner "Cleaning up package cache and temporary user cache files" proot-distro login "$distro" -- bash -c "
+      case '$pm' in
+        apt)    env DEBIAN_FRONTEND=noninteractive apt-get clean &>/dev/null || true ;;
+        apk)    apk cache clean &>/dev/null || true ;;
+        pacman) pacman -Sc --noconfirm &>/dev/null || true ;;
+        dnf)    dnf clean all &>/dev/null || true ;;
+        xbps)   xbps-remove -Oy &>/dev/null || true ;;
+      esac
+      case '$last_de' in
+        xfce4)    rm -f /usr/share/xsessions/xfce.desktop 2>/dev/null || true ;;
+        lxqt)     rm -f /usr/share/xsessions/lxqt.desktop 2>/dev/null || true ;;
+        mate)     rm -f /usr/share/xsessions/mate.desktop 2>/dev/null || true ;;
+        kde)      rm -f /usr/share/xsessions/plasma.desktop 2>/dev/null || true ;;
+        gnome)    
+          rm -f /usr/share/xsessions/gnome.desktop /usr/share/xsessions/gnome-flashback-*.desktop 2>/dev/null || true
+          rm -f /etc/skel/.config/autostart/plank.desktop /root/.config/autostart/plank.desktop 2>/dev/null || true
+          if [ -d /home ]; then
+            for u in /home/*; do
+              [ -d "\$u" ] && rm -f "\$u/.config/autostart/plank.desktop" 2>/dev/null || true
+            done
+          fi
+          ;;
+        budgie)   rm -f /usr/share/xsessions/budgie-desktop.desktop 2>/dev/null || true ;;
+        cinnamon) rm -f /usr/share/xsessions/cinnamon*.desktop 2>/dev/null || true ;;
+        openbox)  rm -f /usr/share/xsessions/openbox.desktop 2>/dev/null || true ;;
+      esac
+      rm -rf /root/.cache 2>/dev/null || true
+      if [ -d /home ]; then
+        for u in /home/*; do
+          [ -d \"\$u\" ] && rm -rf \"\$u/.cache\" 2>/dev/null || true
+        done
+      fi
+    "
   fi
 }
 
