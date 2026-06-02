@@ -1788,7 +1788,7 @@ install_desktop_environment() {
     echo ""
     print_warn "Try running the update/installation commands manually inside the container to see the issue:"
     echo "    proot-distro login $distro"
-    echo "    (then run your package manager update and install commands)"
+    echo "    (then run package manager update and install commands)"
     echo ""
     restore_distro_tools "$distro"
     exit 1
@@ -2158,7 +2158,7 @@ confirm_fallback() {
   echo "" >/dev/tty
   
   local confirm=""
-  read -rp "$(echo -e "${YELLOW}Would you like to transition and install/run '${suggested_de}' instead? [Y/n]: ${RESET}")" confirm </dev/tty
+  read -rp "$(echo -e "${YELLOW}Transition and install/run '${suggested_de}' instead? [Y/n]: ${RESET}")" confirm </dev/tty
   confirm="${confirm:-Y}"
   if [[ "$confirm" =~ ^[Yy]$ ]]; then
     return 0
@@ -2849,12 +2849,14 @@ EOF
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Display Output:"
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - VNC Address: ${ip_addr}:${vnc_port}"
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Resolution:  ${custom_res} (Independent)"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - For miracast run: groot-desk miracast ${d_num} (optional)"
     else
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Termux-X11 session active."
       print_box_sep "─" "${GREEN}${BOLD}"
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Display Outputs:"
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Phone Screen: View via Termux:X11 app"
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - VNC Mirror:   ${ip_addr}:${vnc_port} (Optional)"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - For miracast run: groot-desk miracast ${d_num} (optional)"
     fi
 
     print_box_sep "─" "${GREEN}${BOLD}"
@@ -2879,16 +2881,18 @@ EOF
     fi
 
     echo -e "${BOLD}${CYAN}=== WIRELESS DISPLAY SETUP GUIDE ===${RESET}"
-    echo -e "1. Connect your phone and VNC client device to the same network (Wi-Fi or Hotspot)."
+    echo -e "1. Connect phone and VNC client device to the same network (Wi-Fi or Hotspot)."
     echo -e "2. Install a VNC Viewer app on the client device."
     if [ "$ip_addr" = "127.0.0.1" ]; then
-      echo -e "3. Open the VNC app and connect to: ${BOLD}${YELLOW}[your-phone-network-ip]:${vnc_port}${RESET} (${mode_name} Mode)"
+      echo -e "3. Open the VNC app and connect to: ${BOLD}${YELLOW}[phone-network-ip]:${vnc_port}${RESET} (${mode_name} Mode)"
       echo -e "   ${RED}Current Status: No active Wi-Fi/Hotspot detected. Defaulting to local 127.0.0.1:${vnc_port}${RESET}"
     else
       echo -e "3. Open the VNC app and enter this EXACT address to connect:"
       echo -e "   Address: ${BOLD}${GREEN}${ip_addr}:${vnc_port}${RESET} (${mode_name} Mode, ${custom_res})"
     fi
-    echo -e "No VNC password required. Just connect!"
+    echo -e "No VNC password required. Just connect."
+    echo -e "To connect through Miracast, run the command:"
+    echo -e "   ${BOLD}${CYAN}groot-desk miracast ${d_num} (optional)${RESET}"
     echo -e "${BOLD}${CYAN}====================================${RESET}"
     echo ""
 
@@ -3418,18 +3422,21 @@ cmd_start() {
 
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Multi-Display Session Active (Independent displays):"
     print_box_sep "─" "${GREEN}${BOLD}"
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " 1. Wireless Desktop (Display :2):"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "1. Termux:X11 Desktop (Display :1):"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Output:   Local phone screen app"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - VNC Mirror: ${ip_addr}:5900 (Optional)"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - For miracast run: groot-desk miracast 1 (optional)"
+    print_box_sep "─" "${GREEN}${BOLD}"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "2. Wireless Desktop (Display :2):"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Address:    ${ip_addr}:5901"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Resolution: ${res_d2} (Wireless)"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - For miracast run: groot-desk miracast 2 (optional)"
     print_box_sep "─" "${GREEN}${BOLD}"
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " 2. HDMI Desktop (Display :3):"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "3. HDMI Desktop (Display :3):"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Output:     Physical USB-C/HDMI monitor"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Resolution: ${res_d3} (HDMI)"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - VNC Mirror: ${ip_addr}:5902 (Optional)"
-    print_box_sep "─" "${GREEN}${BOLD}"
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " 3. Termux:X11 Desktop (Display :1):"
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Output:   Local phone screen app"
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - VNC Mirror: ${ip_addr}:5900 (Optional)"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - For miracast run: groot-desk miracast 3 (optional)"
     print_box_sep "─" "${GREEN}${BOLD}"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Distro:      ${distro}"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Desktop:     ${de}"
@@ -3446,21 +3453,21 @@ cmd_start() {
     echo ""
 
     echo -e "${BOLD}${CYAN}=== WIRELESS DISPLAY SETUP GUIDE ===${RESET}"
-    echo -e "1. Connect your phone and VNC client device to the same network (Wi-Fi or Hotspot)."
+    echo -e "1. Connect phone and VNC client device to the same network (Wi-Fi or Hotspot)."
     echo -e "2. Install a VNC Viewer app on the client device."
     if [ "$ip_addr" = "127.0.0.1" ]; then
-      echo -e "3. Open the VNC app and connect to your preferred mode:"
-      echo -e "   - Wireless Desktop:   ${BOLD}${YELLOW}[your-phone-network-ip]:5901${RESET} (${res_d2})"
-      echo -e "   - HDMI VNC Mirror:    ${BOLD}${YELLOW}[your-phone-network-ip]:5902${RESET} (${res_d3})"
-      echo -e "   - Termux:X11 Mirror:  ${BOLD}${YELLOW}[your-phone-network-ip]:5900${RESET}"
+      echo -e "3. Open the VNC app and connect to the preferred mode:"
+      echo -e "   - Termux:X11 Mirror:  ${BOLD}${YELLOW}[phone-network-ip]:5900${RESET}"
+      echo -e "   - Wireless Desktop:   ${BOLD}${YELLOW}[phone-network-ip]:5901${RESET} (${res_d2})"
+      echo -e "   - HDMI VNC Mirror:    ${BOLD}${YELLOW}[phone-network-ip]:5902${RESET} (${res_d3})"
       echo -e "   ${RED}Current Status: No active Wi-Fi/Hotspot detected. Defaulting to local 127.0.0.1${RESET}"
     else
-      echo -e "3. Open the VNC app and connect to your preferred mode:"
+      echo -e "3. Open the VNC app and connect to the preferred mode:"
+      echo -e "   - Termux:X11 Mirror:  ${BOLD}${GREEN}${ip_addr}:5900${RESET} (Local scale)"
       echo -e "   - Wireless Desktop:   ${BOLD}${GREEN}${ip_addr}:5901${RESET} (${res_d2})"
       echo -e "   - HDMI VNC Mirror:    ${BOLD}${GREEN}${ip_addr}:5902${RESET} (${res_d3})"
-      echo -e "   - Termux:X11 Mirror:  ${BOLD}${GREEN}${ip_addr}:5900${RESET} (Local scale)"
     fi
-    echo -e "No VNC password required. Just connect!"
+    echo -e "No VNC password required. Just connect."
     echo -e "${BOLD}${CYAN}====================================${RESET}"
     echo ""
 
@@ -4203,8 +4210,8 @@ cmd_delete() {
     exit 1
   fi
 
-  print_warn "This will completely delete the ${distro} container, desktop environments, and all settings!"
-  read -rp "$(echo -e "${YELLOW}Are you absolutely sure? [y/N]: ${RESET}")" confirm
+  print_warn "This will completely delete the ${distro} container, desktop environments, and all settings."
+  read -rp "$(echo -e "${YELLOW}Confirm absolute deletion? [y/N]: ${RESET}")" confirm
   confirm="${confirm:-N}"
   if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
     print_info "Cancelled."
@@ -4338,6 +4345,12 @@ cmd_help() {
   echo -e "      Remove groot-desk itself (installed distributions are preserved)."
   echo ""
 
+  echo -e "  ${CYAN}groot-desk miracast <distro|display> [de] [display]${RESET}"
+  echo -e "      Share a session or display via Miracast (Wi-Fi Direct)."
+  echo -e "      ${GRAY}Example: groot-desk miracast ubuntu${RESET}"
+  echo -e "      ${GRAY}Example: groot-desk miracast 2${RESET}"
+  echo ""
+
   echo -e "  ${CYAN}groot-desk help${RESET}"
   echo -e "      Show this help menu."
   echo ""
@@ -4356,6 +4369,8 @@ cmd_help() {
   echo -e "  ${GRAY}groot-desk install kali${RESET}"
   echo -e "  ${GRAY}groot-desk install mydebian debian:12${RESET}"
   echo -e "  ${GRAY}groot-desk install mykali kalilinux/kali-rolling:latest${RESET}"
+  echo -e "  ${GRAY}groot-desk miracast ubuntu${RESET}"
+  echo -e "  ${GRAY}groot-desk miracast 2${RESET}"
   echo -e "  ${GRAY}groot-desk start ubuntu${RESET}"
   echo -e "  ${GRAY}groot-desk start kali :2 xfce4${RESET}"
   echo -e "  ${GRAY}groot-desk start ubuntu -y${RESET}"
@@ -4383,6 +4398,178 @@ cmd_logs() {
     print_warn "No log file found at ${LOG_FILE}"
   fi
 }
+
+# -----------------------------------------------------------------------------
+# Miracast wireless display streaming with UIBC support
+# -----------------------------------------------------------------------------
+cmd_miracast() {
+  local arg1="${1:-}"
+  local arg2="${2:-}"
+  local arg3="${3:-}"
+
+  check_proot_distro
+
+  # Case 1: No arguments or invalid sub-command -> show help and guidelines
+  if [ -z "$arg1" ]; then
+    print_error "Specify a target to connect via Miracast."
+    echo ""
+    echo -e "${BOLD}Usage:${RESET}"
+    echo -e "  ${CYAN}groot-desk miracast <display_number>${RESET}"
+    echo -e "      Share a currently running display via Miracast (choose 1, 2, or 3)."
+    echo -e "      Example: groot-desk miracast 2"
+    echo ""
+    echo -e "  ${CYAN}groot-desk miracast <distro>${RESET}"
+    echo -e "      Start a session and share it (defaults: last DE, wireless display)."
+    echo -e "      Example: groot-desk miracast ubuntu"
+    echo ""
+    echo -e "  ${CYAN}groot-desk miracast <distro> <de> <display_number>${RESET}"
+    echo -e "      Start a specific session and share it."
+    echo -e "      Example: groot-desk miracast ubuntu xfce4 2"
+    echo ""
+    exit 1
+  fi
+
+  local target_port=""
+  local distro=""
+  local de=""
+  local display=""
+
+  # Check if first argument is a display number, port, or IP:Port format
+  # Examples: 1, 2, 3, :1, :2, :3, 5900, 5901, 5902, 192.168.1.10:5901
+  if [[ "$arg1" =~ :[0-9]+$ || "$arg1" =~ ^[0-9]+$ || "$arg1" =~ ^:[0-9]+$ ]]; then
+    # Parse display number or port
+    if [[ "$arg1" =~ :([0-9]+)$ ]]; then
+      target_port="${BASH_REMATCH[1]}"
+    else
+      target_port="$arg1"
+    fi
+    
+    # Strip colon if it was just :1, :2, :3
+    target_port="${target_port#:}"
+
+    # Map target_port to display number
+    if [ "$target_port" = "5900" ] || [ "$target_port" = "1" ]; then
+      display=":1"
+    elif [ "$target_port" = "5901" ] || [ "$target_port" = "2" ]; then
+      display=":2"
+    elif [ "$target_port" = "5902" ] || [ "$target_port" = "3" ]; then
+      display=":3"
+    else
+      print_error "Invalid display number or port: $target_port. Choose 1, 2, or 3."
+      exit 1
+    fi
+    
+    print_step "Locating active session running on display $display..."
+    
+    # Locate active distro on this display
+    local found_distro=""
+    local installed
+    installed=$(get_installed_distros)
+    while read -r d; do
+      [ -z "$d" ] && continue
+      if pgrep -f "proot-distro login.*${d}" &>/dev/null; then
+        if pgrep -f "termux-x11.*$display" &>/dev/null || pgrep -f "Xvfb.*$display" &>/dev/null; then
+          if pgrep -f "proot-distro login.*${d}" | while read -r pid; do cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' | grep -q -E "DISPLAY=${display}|DISPLAY= ${display}" && echo "yes"; done | grep -q "yes"; then
+            found_distro="$d"
+            break
+          fi
+        fi
+      fi
+    done <<< "$installed"
+    
+    # Safe Fallback: if display matching is inconclusive but a distro session is active, associate it
+    if [ -z "$found_distro" ]; then
+      while read -r d; do
+        [ -z "$d" ] && continue
+        if pgrep -f "proot-distro login.*${d}" &>/dev/null; then
+          found_distro="$d"
+          break
+        fi
+      done <<< "$installed"
+    fi
+    
+    if [ -z "$found_distro" ]; then
+      print_warn "No active background session was found running on display $display."
+      print_info "To start a new session, run: groot-desk miracast <distro>"
+      exit 1
+    fi
+    distro="$found_distro"
+    
+  else
+    # Case 2: First argument is a distro name
+    distro="$arg1"
+    local installed
+    installed=$(get_installed_distros)
+    if ! echo "$installed" | grep -qx "$distro"; then
+      print_error "Distribution '$distro' is not installed."
+      print_info "Installed distributions:"
+      echo "$installed" | sed 's/^/  /'
+      exit 1
+    fi
+
+    # Read defaults
+    de="$arg2"
+    if [ -z "$de" ]; then
+      de=$(config_get_distro_field "$distro" "last_de")
+      de="${de:-xfce4}"
+    fi
+
+    display="$arg3"
+    if [ -z "$display" ]; then
+      display=":2" # default is wireless display (VNC port 5901)
+    fi
+
+    # Format display to :N format
+    if [[ "$display" =~ ^[0-9]+$ ]]; then
+      display=":$display"
+    fi
+    if [[ ! "$display" =~ ^:[1-3]$ ]]; then
+      # Maybe they passed a VNC port like 5901
+      if [ "$display" = "5900" ]; then display=":1"
+      elif [ "$display" = "5901" ]; then display=":2"
+      elif [ "$display" = "5902" ]; then display=":3"
+      else
+        print_error "Invalid display option: $display. Choose :1 (5900), :2 (5901), or :3 (5902)"
+        exit 1
+      fi
+    fi
+
+    # Start the desktop session if not already running on this display
+    local d_num="${display#*:}"
+    if ! pgrep -f "termux-x11.*$display" &>/dev/null && ! pgrep -f "Xvfb.*$display" &>/dev/null; then
+      print_step "Starting session for $distro using $de on display $display..."
+      cmd_start "$distro" "$display" "$de" "y" ""
+    else
+      print_info "Session for $distro is already running on display $display."
+    fi
+  fi
+
+  # Now trigger Miracast connection flow and show technical parameters
+  print_step "Preparing Miracast connection for display $display..."
+  echo ""
+  print_separator "═"
+  echo -e "${BOLD}${WHITE} 📶 WIRELESS DISPLAY / MIRACAST CASTING${RESET}"
+  print_separator "─"
+  print_wrapped "  " "${WHITE}" "The system is launching the native Android wireless display casting panel."
+  echo ""
+  print_wrapped "  " "${GRAY}" "1. Make sure the Miracast sink (TV, external monitor, or cast target) is active."
+  print_wrapped "  " "${GRAY}" "2. When the Android Cast Settings panel opens, select the target display device."
+  print_wrapped "  " "${GRAY}" "3. Desktop display $display will project instantly."
+  print_separator "═"
+  echo ""
+
+  # Launch casting settings
+  if ! am start --user 0 -a android.settings.CAST_SETTINGS >> "$LOG_FILE" 2>&1; then
+    if ! am start --user 0 -n com.android.settings/.wfd.WifiDisplaySettings >> "$LOG_FILE" 2>&1; then
+      print_error "Failed to launch Android wireless display settings automatically."
+      print_info "Open Android Settings manually and go to: Connection & Sharing -> Cast or Wireless Display."
+      exit 1
+    fi
+  fi
+  print_success "Wireless display settings launched."
+}
+
+# -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
 # Show/refresh displays
@@ -4500,6 +4687,7 @@ case "$COMMAND" in
   kill)         cmd_kill "${1:-}" ;;
   reset)        cmd_reset "${1:-}" ;;
   remove-desk)  cmd_remove_desk "${1:-}" ;;
+  miracast)     cmd_miracast "${1:-}" "${2:-}" "${3:-}" ;;
   delete)       cmd_delete "${1:-}" ;;
   uninstall)    cmd_uninstall ;;
   help|--help|-h) cmd_help ;;
