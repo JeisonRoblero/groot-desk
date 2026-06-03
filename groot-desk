@@ -225,6 +225,8 @@ print_step()    { echo -e "${WHITE}[....] $1${RESET}"; }
 print_gray()    { echo -e "${GRAY}$1${RESET}"; }
 
 cleanup() {
+  # Re-enable line wrapping in case it was disabled
+  printf "\033[?7h" 2>/dev/null
   echo ""
   print_warn "Interrupted."
   # Kill X11
@@ -248,7 +250,7 @@ cleanup() {
     ' &>/dev/null || true
   fi
   # Kill any running proot sessions spawned by the script to release lock files
-  pkill -f "proot-distro login" 2>/dev/null
+  pkill -f "proot-distro" 2>/dev/null
   exit 1
 }
 trap cleanup INT TERM
@@ -299,7 +301,7 @@ run_with_spinner() {
         last_lines=$total_lines
         
         local last_match
-        last_match=$(echo "$chunk" | grep -E -i "Get:[0-9]+|Setting up|Configuring|Installing|Unpacking|Removing|Purging|Unmerging" | tail -n 1)
+        last_match=$(echo "$chunk" | grep -E -i "Get:[0-9]+|Setting up|Configuring|Installing|Unpacking|Removing|Purging|Unmerging|\[[-# ]+\][[:space:]]+[0-9]+%|^[[:space:]]*\[\*\][[:space:]]+" | tail -n 1)
         if [ -n "$last_match" ]; then
           if [[ "$last_match" =~ (Removing|Purging|Unmerging|removing|purging|unmerging) ]]; then
             local clean_line
@@ -341,6 +343,19 @@ run_with_spinner() {
               local get_url
               get_url=$(echo "$last_match" | awk '{print $2}' | cut -d/ -f3 | cut -d. -f1-2)
               display_msg="Upd: $get_id $get_url"
+            fi
+          elif [[ "$last_match" =~ \[([-# ]+)\][[:space:]]+([0-9]+%) ]]; then
+            local pct="${BASH_REMATCH[2]}"
+            local sz=""
+            if [[ "$last_match" =~ ([0-9.]+[[:space:]]+(MiB|KiB|GiB|B)) ]]; then
+              sz=" (${BASH_REMATCH[1]})"
+            fi
+            display_msg="Downloading: ${pct}${sz}"
+          elif [[ "$last_match" =~ ^[[:space:]]*\[\*\][[:space:]]+(.*) ]]; then
+            local info_msg="${BASH_REMATCH[1]}"
+            if [[ ! "$info_msg" =~ ^\[ ]]; then
+              [ ${#info_msg} -gt 25 ] && info_msg="${info_msg:0:22}..."
+              display_msg="$info_msg"
             fi
           fi
         fi
@@ -703,9 +718,13 @@ optimize_distro_mirrors() {
     pacman)
       proot-distro login "$distro" -- bash -c "
         if [ -f '/etc/pacman.d/mirrorlist' ]; then
-          echo 'Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch' > /etc/pacman.d/mirrorlist
-          echo 'Server = https://mirror.rackspace.com/archlinux/\$repo/os/\$arch' >> /etc/pacman.d/mirrorlist
-          echo 'Server = https://mirrors.kernel.org/archlinux/\$repo/os/\$arch' >> /etc/pacman.d/mirrorlist
+          if [[ \"\$(uname -m)\" == \"aarch64\" || \"\$(uname -m)\" == \"arm64\" ]]; then
+            echo 'Server = http://mirror.archlinuxarm.org/\$arch/\$repo' > /etc/pacman.d/mirrorlist
+          else
+            echo 'Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch' > /etc/pacman.d/mirrorlist
+            echo 'Server = https://mirror.rackspace.com/archlinux/\$repo/os/\$arch' >> /etc/pacman.d/mirrorlist
+            echo 'Server = https://mirrors.kernel.org/archlinux/\$repo/os/\$arch' >> /etc/pacman.d/mirrorlist
+          fi
         fi
       "
       ;;
@@ -774,17 +793,18 @@ DE_LIST=(xfce4 lxqt mate kde gnome budgie cinnamon openbox)
 
 get_distro_pkg_manager() {
   local distro="$1"
-  if proot-distro login "$distro" -- sh -c "command -v apt-get" &>/dev/null; then
+  local clean_path="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  if proot-distro login "$distro" -- sh -c "$clean_path command -v apt-get" &>/dev/null; then
     echo "apt"
-  elif proot-distro login "$distro" -- sh -c "command -v apk" &>/dev/null; then
+  elif proot-distro login "$distro" -- sh -c "$clean_path command -v apk" &>/dev/null; then
     echo "apk"
-  elif proot-distro login "$distro" -- sh -c "command -v pacman" &>/dev/null; then
+  elif proot-distro login "$distro" -- sh -c "$clean_path command -v pacman" &>/dev/null; then
     echo "pacman"
-  elif proot-distro login "$distro" -- sh -c "command -v dnf" &>/dev/null; then
+  elif proot-distro login "$distro" -- sh -c "$clean_path command -v dnf" &>/dev/null; then
     echo "dnf"
-  elif proot-distro login "$distro" -- sh -c "command -v xbps-install" &>/dev/null; then
+  elif proot-distro login "$distro" -- sh -c "$clean_path command -v xbps-install" &>/dev/null; then
     echo "xbps"
-  elif proot-distro login "$distro" -- sh -c "command -v emerge" &>/dev/null; then
+  elif proot-distro login "$distro" -- sh -c "$clean_path command -v emerge" &>/dev/null; then
     echo "emerge"
   else
     case "$distro" in
@@ -796,6 +816,116 @@ get_distro_pkg_manager() {
       gentoo*) echo "emerge" ;;
       *) echo "apt" ;;
     esac
+  fi
+}
+
+update_guest_repos() {
+  local distro="$1" pm="$2"
+  case "$pm" in
+    apt)
+      proot-distro login "$distro" -- sh -c "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; apt-get update -y" &>/dev/null || true
+      ;;
+    apk)
+      proot-distro login "$distro" -- sh -c "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; apk update" &>/dev/null || true
+      ;;
+    pacman)
+      proot-distro login "$distro" -- sh -c "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; pacman -Sy --noconfirm" &>/dev/null || true
+      ;;
+    dnf)
+      proot-distro login "$distro" -- sh -c "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; dnf makecache" &>/dev/null || true
+      ;;
+    xbps)
+      proot-distro login "$distro" -- sh -c "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; xbps-install -Sy" &>/dev/null || true
+      ;;
+    emerge)
+      proot-distro login "$distro" -- sh -c "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; emerge --sync" &>/dev/null || true
+      ;;
+  esac
+}
+
+search_guest_de_packages() {
+  local distro="$1" pm="$2" keyword="$3"
+  case "$pm" in
+    apt)
+      proot-distro login "$distro" -- sh -c "
+        export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        apt-cache search \"$keyword\" 2>/dev/null | sed -E 's/^[[:space:]]*([^[:space:]]+)[[:space:]]+-[[:space:]]+(.*)$/\1|\2/'
+      "
+      ;;
+    apk)
+      proot-distro login "$distro" -- sh -c "
+        export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        apk search -v -d \"$keyword\" 2>/dev/null | sed -E 's/^([^ -]+)-[0-9][^ ]* - (.*)$/\1|\2/'
+      "
+      ;;
+    pacman)
+      proot-distro login "$distro" -- sh -c "
+        export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        pacman -Ss \"$keyword\" 2>/dev/null | awk '
+          NR%2==1 {
+            split(\$1, a, \"/\");
+            pkg=a[2] ? a[2] : a[1];
+          }
+          NR%2==0 {
+            sub(/^[ \t]+/, \"\");
+            print pkg \"|\" \$0;
+          }
+        '
+      "
+      ;;
+    dnf)
+      proot-distro login "$distro" -- sh -c "
+        export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        dnf search \"$keyword\" 2>/dev/null | grep ' : ' | sed -E 's/^([^.]+)\.[^ ]+[[:space:]]*:[[:space:]]*(.*)$/\1|\2/'
+      "
+      ;;
+    xbps)
+      proot-distro login "$distro" -- sh -c "
+        export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        xbps-query -Rs \"$keyword\" 2>/dev/null | sed -E 's/^\[.\] ([^ -]+)-[0-9][^ ]* (.*)$/\1|\2/'
+      "
+      ;;
+    emerge)
+      proot-distro login "$distro" -- sh -c "
+        export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        emerge --search \"$keyword\" 2>/dev/null | awk '
+          /^\*/ { pkg=\$2; sub(/^.*\//, \"\", pkg); }
+          /Description:/ { sub(/^.*Description:[ \t]*/, \"\"); print pkg \"|\" \$0; }
+        '
+      "
+      ;;
+  esac
+}
+
+load_custom_des_from_config() {
+  if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
+    local stored_des
+    stored_des=$(jq -r '.distros | to_entries[] | .value.last_de // empty' "$CONFIG_FILE" 2>/dev/null | sort -u)
+    for sde in $stored_des; do
+      if [ -n "$sde" ] && [[ ! " ${DE_LIST[*]} " == *" $sde "* ]]; then
+        DE_PACKAGE["$sde"]="$sde"
+        DE_DESC["$sde"]="Custom desktop environment: $sde"
+        DE_SIZE["$sde"]="unknown size"
+        DE_GENERIC_PACKAGE["$sde"]="$sde"
+        if [[ ! " ${DE_LIST[*]} " == *" $sde "* ]]; then
+          DE_LIST+=("$sde")
+        fi
+      fi
+    done
+    local installed_pkg_keys
+    installed_pkg_keys=$(jq -r '.distros | to_entries[] | .value | to_entries[] | select(.key | startswith("installed_pkg_")) | .key' "$CONFIG_FILE" 2>/dev/null | sort -u)
+    for k in $installed_pkg_keys; do
+      local sde="${k#installed_pkg_}"
+      if [ -n "$sde" ] && [[ ! " ${DE_LIST[*]} " == *" $sde "* ]]; then
+        DE_PACKAGE["$sde"]="$sde"
+        DE_DESC["$sde"]="Custom desktop environment: $sde"
+        DE_SIZE["$sde"]="unknown size"
+        DE_GENERIC_PACKAGE["$sde"]="$sde"
+        if [[ ! " ${DE_LIST[*]} " == *" $sde "* ]]; then
+          DE_LIST+=("$sde")
+        fi
+      fi
+    done
   fi
 }
 
@@ -1426,6 +1556,206 @@ SELECTED_DISTRO=""
 # -----------------------------------------------------------------------------
 SELECTED_DE=""
 
+verify_image_arm_compatibility() {
+  local repo="$1"
+  repo=$(echo "$repo" | tr -d '\r' | tr -d ' ')
+  local url
+  if [[ "$repo" != *"/"* ]]; then
+    url="https://hub.docker.com/v2/repositories/library/${repo}/tags?page_size=15"
+  else
+    url="https://hub.docker.com/v2/repositories/${repo}/tags?page_size=15"
+  fi
+  
+  local response
+  response=$(curl -sS --connect-timeout 5 "$url" 2>/dev/null | tr -d '\r')
+  if [ -n "$response" ] && echo "$response" | grep -qi -E '"architecture":"(arm64|arm)"'; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+run_custom_distro_search_flow() {
+  local query=""
+  while true; do
+    echo "" >/dev/tty
+    read -rp "$(echo -e "${CYAN}Enter distribution name or Docker Hub search query (or C to cancel): ${RESET}")" query </dev/tty
+    query=$(echo "$query" | tr -d '\r' | xargs)
+    if [ -z "$query" ] || [ "$query" = "C" ] || [ "$query" = "c" ]; then
+      return 0
+    fi
+
+    # Query Docker Hub Registry API
+    local search_url="https://registry.hub.docker.com/v1/search?q=${query}&n=15"
+    local raw_results
+    raw_results=$(curl -sS --connect-timeout 5 "$search_url" 2>/dev/null | tr -d '\r')
+    
+    # Parse results using jq
+    if [ -z "$raw_results" ] || ! echo "$raw_results" | jq -e '.results | length > 0' &>/dev/null; then
+      echo -e "${RED}[error]${RESET} No matching distributions found for \"$query\" on Docker Hub." >/dev/tty
+      continue
+    fi
+
+    echo "" >/dev/tty
+    echo -e "${BOLD}${WHITE}Found matching distributions on Docker Hub:${RESET}" >/dev/tty
+    echo "" >/dev/tty
+
+    # Read names and descriptions
+    local count=1
+    local repo_names=()
+    local repo_descs=()
+    
+    # We parse using jq to output name and description separated by "|"
+    local parsed_results
+    parsed_results=$(echo "$raw_results" | jq -r '.results[] | "\(.name)|\(.description // "")"' | tr -d '\r')
+    
+    while IFS="|" read -r name desc; do
+      [ -z "$name" ] && continue
+      name=$(echo "$name" | tr -d '\r' | tr -d ' ')
+      repo_names+=("$name")
+      repo_descs+=("$desc")
+      
+      local official_marker=""
+      if [[ "$name" != *"/"* ]]; then
+        official_marker=" ${GREEN}(official)${RESET}"
+      fi
+      
+      echo -e "  ${BOLD}[$count]${RESET} ${WHITE}$name${RESET}${official_marker}" >/dev/tty
+      [ -n "$desc" ] && echo -e "      ${GRAY}${desc:0:100}${RESET}" >/dev/tty
+      echo "" >/dev/tty
+      ((count++))
+    done <<< "$parsed_results"
+
+    local choice=""
+    while true; do
+      read -rp "$(echo -e "${CYAN}Select [1-$((count - 1))] to install (or C to cancel and search again): ${RESET}")" choice </dev/tty
+      choice=$(echo "$choice" | tr -d '\r' | tr -d ' ')
+      if [ -z "$choice" ] || [ "$choice" = "C" ] || [ "$choice" = "c" ]; then
+        break
+      fi
+      if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$((count - 1))" ]; then
+        local selected_repo="${repo_names[$((choice - 1))]}"
+        selected_repo=$(echo "$selected_repo" | tr -d '\r' | tr -d ' ')
+        
+        # Verify ARM compatibility
+        local check_status=0
+        run_with_spinner "Verifying ARM architecture compatibility" verify_image_arm_compatibility "$selected_repo" >&2
+        check_status=$?
+        
+        if [ $check_status -ne 0 ]; then
+          echo "" >/dev/tty
+          print_warn "Image '$selected_repo' does not appear to have an arm64 or arm build in its tags." >&2
+          local proceed=""
+          read -rp "$(echo -e "${YELLOW}Attempt to install anyway? [y/N]: ${RESET}")" proceed </dev/tty
+          proceed=$(echo "$proceed" | tr -d '\r' | tr -d ' ')
+          if [[ ! "$proceed" =~ ^[Yy]$ ]]; then
+            continue
+          fi
+        fi
+
+        # Choose a tag (default to latest or let user specify)
+        local tag="latest"
+        echo "" >/dev/tty
+        read -rp "$(echo -e "${CYAN}Enter image tag (enter for default: latest): ${RESET}")" input_tag </dev/tty
+        input_tag=$(echo "$input_tag" | tr -d '\r' | tr -d ' ')
+        if [ -n "$input_tag" ]; then
+          tag="$input_tag"
+        fi
+
+        local full_image="$selected_repo:$tag"
+
+        # Ask user for a local alias name
+        local alias_name=""
+        local default_alias="${selected_repo#*/}" # e.g. "alpine" from "alpine" or "alpine/git"
+        default_alias=$(echo "$default_alias" | tr -d '\r' | tr -d ' ')
+        while [ -z "$alias_name" ]; do
+          echo "" >/dev/tty
+          read -rp "$(echo -e "${CYAN}Enter a local name for this distro (enter for default: $default_alias): ${RESET}")" alias_name </dev/tty
+          alias_name=$(echo "$alias_name" | tr -d '\r' | tr -d ' ')
+          alias_name="${alias_name:-$default_alias}"
+          if [[ ! "$alias_name" =~ ^[a-z0-9-]+$ ]]; then
+            echo -e "${RED}[error]${RESET} Local name must contain only lowercase letters, numbers, and hyphens." >/dev/tty
+            alias_name=""
+          fi
+        done
+
+        # Store details and return the configured image + alias details
+        echo "$alias_name|$full_image"
+        return 0
+      fi
+      echo -e "${RED}[error]${RESET} Invalid option. Enter a number between 1 and $((count - 1)) or C." >/dev/tty
+    done
+  done
+}
+
+run_custom_de_search_flow() {
+  local distro="$1"
+  local pm
+  pm=$(get_distro_pkg_manager "$distro")
+
+  local query=""
+  while true; do
+    echo "" >/dev/tty
+    read -rp "$(echo -e "${CYAN}Enter desktop environment or package name to search for (or C to cancel): ${RESET}")" query </dev/tty
+    query=$(echo "$query" | tr -d '\r' | xargs)
+    if [ -z "$query" ] || [ "$query" = "C" ] || [ "$query" = "c" ]; then
+      return 0
+    fi
+
+    run_with_spinner "Updating package database inside $distro" update_guest_repos "$distro" "$pm" >&2
+
+    local search_results
+    search_results=$(search_guest_de_packages "$distro" "$pm" "$query" | head -n 25)
+
+    if [ -z "$search_results" ]; then
+      echo -e "${RED}[error]${RESET} No matching packages found for \"$query\" inside $distro catalog." >/dev/tty
+      continue
+    fi
+
+    echo "" >/dev/tty
+    echo -e "${BOLD}${WHITE}Found matching packages in guest store:${RESET}" >/dev/tty
+    echo "" >/dev/tty
+
+    local count=1
+    local pkgs=()
+    local descs=()
+    while IFS="|" read -r pkg desc; do
+      [ -z "$pkg" ] && continue
+      pkgs+=("$pkg")
+      descs+=("$desc")
+      echo -e "  ${BOLD}[$count]${RESET} ${WHITE}$pkg${RESET}" >/dev/tty
+      echo -e "      ${GRAY}$desc${RESET}" >/dev/tty
+      echo "" >/dev/tty
+      ((count++))
+    done <<< "$search_results"
+
+    local choice=""
+    while true; do
+      read -rp "$(echo -e "${CYAN}Select [1-$((count - 1))] to install (or C to cancel and search again): ${RESET}")" choice </dev/tty
+      choice=$(echo "$choice" | tr -d '\r' | tr -d ' ')
+      if [ -z "$choice" ] || [ "$choice" = "C" ] || [ "$choice" = "c" ]; then
+        break
+      fi
+      if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$((count - 1))" ]; then
+        local selected_pkg="${pkgs[$((choice - 1))]}"
+        
+        DE_PACKAGE["$selected_pkg"]="$selected_pkg"
+        DE_DESC["$selected_pkg"]="${descs[$((choice - 1))]}"
+        DE_SIZE["$selected_pkg"]="unknown size"
+        DE_GENERIC_PACKAGE["$selected_pkg"]="$selected_pkg"
+        
+        if [[ ! " ${DE_LIST[*]} " == *" $selected_pkg "* ]]; then
+          DE_LIST+=("$selected_pkg")
+        fi
+
+        echo "$selected_pkg"
+        return 0
+      fi
+      echo -e "${RED}[error]${RESET} Invalid option. Enter a number between 1 and $((count - 1)) or C." >/dev/tty
+    done
+  done
+}
+
 select_desktop_environment() {
   local distro="$1"
   local de
@@ -1447,6 +1777,11 @@ select_desktop_environment() {
     ((i++))
   done
 
+  # Add Custom option
+  echo -e "  ${BOLD}[$i]${RESET} ${WHITE}Custom${RESET}" >/dev/tty
+  echo -e "      ${GRAY}Search and install any package or desktop environment from repositories.${RESET}" >/dev/tty
+  echo "" >/dev/tty
+
   # Find the recommended option to use as default, fallback to 1
   local default_choice=1
   local idx=1
@@ -1460,15 +1795,27 @@ select_desktop_environment() {
 
   local choice=""
   while true; do
-    read -rp "$(echo -e "${CYAN}Select [1-${#DE_LIST[@]}] (enter for default/recommended): ${RESET}")" choice </dev/tty
+    read -rp "$(echo -e "${CYAN}Select [1-$i] (enter for default/recommended): ${RESET}")" choice </dev/tty
     # Trim carriage returns and spaces to handle terminal anomalies
     choice=$(echo "$choice" | tr -d '\r' | tr -d ' ')
     choice="${choice:-$default_choice}"
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#DE_LIST[@]}" ]; then
-      SELECTED_DE="${DE_LIST[$((choice - 1))]}"
-      return
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$i" ]; then
+      if [ "$choice" -eq "$i" ]; then
+        local custom_de=""
+        custom_de=$(run_custom_de_search_flow "$distro")
+        if [ -n "$custom_de" ]; then
+          SELECTED_DE="$custom_de"
+          return
+        else
+          select_desktop_environment "$distro"
+          return
+        fi
+      else
+        SELECTED_DE="${DE_LIST[$((choice - 1))]}"
+        return
+      fi
     fi
-    echo -e "${RED}[error]${RESET} Invalid option. Enter a number between 1 and ${#DE_LIST[@]}." >/dev/tty
+    echo -e "${RED}[error]${RESET} Invalid option. Enter a number between 1 and $i." >/dev/tty
   done
 }
 
@@ -1478,7 +1825,25 @@ select_desktop_environment() {
 de_is_installed() {
   local distro="$1" de="$2"
   local cmd="${DE_STARTCMD[$de]}"
-  proot-distro login "$distro" -- sh -c "env PATH=\$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin command -v $cmd || [ -f /usr/bin/$cmd ] || [ -f /usr/local/bin/$cmd ] || [ -f /bin/$cmd ] || [ -f /usr/sbin/$cmd ]" &>/dev/null
+  if [ -z "$cmd" ]; then
+    # Dynamically resolve startcmd from guest xsessions desktop files
+    cmd=$(proot-distro login "$distro" -- sh -c "
+      export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      for f in /usr/share/xsessions/*.desktop; do
+        if [ -f \"\$f\" ]; then
+          exec_line=\$(grep -i '^Exec=' \"\$f\" | head -n1 | cut -d= -f2-)
+          if [ -n \"\$exec_line\" ]; then
+            echo \"\$exec_line\" | sed 's/ %[a-zA-Z]//g' | xargs
+            exit 0
+          fi
+        fi
+      done
+      exit 1
+    " 2>/dev/null)
+    cmd="${cmd:-$de}"
+    DE_STARTCMD[$de]="$cmd"
+  fi
+  proot-distro login "$distro" -- sh -c "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin command -v $cmd || [ -f /usr/bin/$cmd ] || [ -f /usr/local/bin/$cmd ] || [ -f /bin/$cmd ] || [ -f /usr/sbin/$cmd ]" &>/dev/null
 }
 
 install_desktop_environment() {
@@ -1514,8 +1879,9 @@ install_desktop_environment() {
     for candidate in $probe_candidates; do
       local found
       found=$(proot-distro login "$distro" -- bash -c \
-        "apt-cache show '$candidate' 2>/dev/null | grep -c '^Package:'" 2>/dev/null || echo 0)
-      if [ "${found:-0}" -gt 0 ]; then
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin apt-cache show '$candidate' 2>/dev/null | grep -c '^Package:'" 2>/dev/null || true)
+      found="${found:-0}"
+      if [ "$found" -gt 0 ] 2>/dev/null; then
         probed_pkg="$candidate"
         log "Probed: found $candidate for $de in $distro"
         break
@@ -1587,7 +1953,7 @@ install_desktop_environment() {
         print_error "Failed to update packages inside ${distro}."
         exit 1
       fi
-      install_cmd="pacman -S --noconfirm --needed $pkg"
+      install_cmd="pacman -Syu --noconfirm --needed --overwrite '*' $pkg"
       ;;
     dnf)
       run_with_spinner "Cleaning package cache" proot-distro login "$distro" -- dnf clean all
@@ -1679,7 +2045,7 @@ install_desktop_environment() {
       pacman)
         run_with_spinner "Purging broken package state" proot-distro login "$distro" -- bash -c \
           "to_purge=''; for p in $purge_pkgs; do if pacman -Q \"\$p\" &>/dev/null; then to_purge=\"\$to_purge \$p\"; fi; done; if [ -n \"\$to_purge\" ]; then pacman -Rns --noconfirm \$to_purge; fi"
-        run_with_spinner "Re-installing desktop packages" proot-distro login "$distro" -- pacman -S --noconfirm --needed "$pkg"
+        run_with_spinner "Re-installing desktop packages" proot-distro login "$distro" -- pacman -Syu --noconfirm --needed --overwrite '*' "$pkg"
         status=$?
         ;;
       dnf)
@@ -1717,7 +2083,7 @@ install_desktop_environment() {
         fallback_cmd="apk add --no-cache $generic_pkg"
         ;;
       pacman)
-        fallback_cmd="pacman -S --noconfirm --needed $generic_pkg"
+        fallback_cmd="pacman -Syu --noconfirm --needed --overwrite '*' $generic_pkg"
         ;;
       dnf)
         fallback_cmd="dnf install -y $generic_pkg"
@@ -1918,7 +2284,7 @@ install_vulkan_drivers_in_container() {
       run_with_spinner "Installing Vulkan packages" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" mesa-vulkan-drivers vulkan-tools libvulkan1
       ;;
     pacman)
-      run_with_spinner "Installing Vulkan packages" proot-distro login "$distro" -- pacman -S --noconfirm --needed vulkan-freedreno vulkan-tools
+      run_with_spinner "Installing Vulkan packages" proot-distro login "$distro" -- pacman -Syu --noconfirm --needed --overwrite '*' vulkan-freedreno vulkan-tools
       ;;
     dnf)
       run_with_spinner "Installing Vulkan packages" proot-distro login "$distro" -- dnf install -y mesa-vulkan-drivers vulkan-tools
@@ -1951,7 +2317,7 @@ install_session_management_workarounds() {
         run_with_spinner "Installing dbus-x11" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dbus-x11
         ;;
       pacman)
-        run_with_spinner "Installing dbus" proot-distro login "$distro" -- pacman -S --noconfirm --needed dbus
+        run_with_spinner "Installing dbus" proot-distro login "$distro" -- pacman -Syu --noconfirm --needed --overwrite '*' dbus
         ;;
       dnf)
         run_with_spinner "Installing dbus" proot-distro login "$distro" -- dnf install -y dbus-x11
@@ -1972,7 +2338,7 @@ install_session_management_workarounds() {
         proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get install -y elogind libpam-elogind >> "$LOG_FILE" 2>&1 || print_warn "elogind not available (systemd distro) - using fake session env vars instead."
         ;;
       pacman)
-        run_with_spinner "Installing elogind" proot-distro login "$distro" -- pacman -S --noconfirm --needed elogind || true
+        run_with_spinner "Installing elogind" proot-distro login "$distro" -- pacman -Syu --noconfirm --needed --overwrite '*' elogind || true
         ;;
       dnf)
         run_with_spinner "Installing elogind" proot-distro login "$distro" -- dnf install -y elogind || true
@@ -2012,7 +2378,7 @@ install_session_management_workarounds() {
           run_with_spinner "Installing gcc for session helper" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get install -y gcc libc-dev || true
           ;;
         pacman)
-          run_with_spinner "Installing gcc for session helper" proot-distro login "$distro" -- pacman -S --noconfirm --needed gcc || true
+          run_with_spinner "Installing gcc for session helper" proot-distro login "$distro" -- pacman -Syu --noconfirm --needed --overwrite '*' gcc || true
           ;;
         dnf)
           run_with_spinner "Installing gcc for session helper" proot-distro login "$distro" -- dnf install -y gcc || true
@@ -2176,8 +2542,11 @@ launch_desktop() {
   display="${display:-:0}"
 
   # Terminate any orphaned host logins for this distro to release lock handles on this specific display
-  pgrep -f "proot-distro login ${distro}" | while read -r pid; do
-    if [ -n "$pid" ] && cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' | grep -q -E "DISPLAY=${display}|DISPLAY= ${display}"; then
+  pgrep -f "proot" | while read -r pid; do
+    [ -z "$pid" ] && continue
+    local cmdline
+    cmdline=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' || true)
+    if [[ "$cmdline" =~ "${distro}" ]] && [[ "$cmdline" =~ "DISPLAY=${display}" || "$cmdline" =~ "DISPLAY= ${display}" ]]; then
       kill -9 "$pid" 2>/dev/null || true
     fi
   done
@@ -2189,15 +2558,59 @@ launch_desktop() {
   
   local dbus_missing=0
   local pulse_missing=0
-  
-  if ! proot-distro login "$distro" -- sh -c "env PATH=\$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin command -v dbus-launch || [ -f /usr/bin/dbus-launch ] || [ -f /usr/local/bin/dbus-launch ] || [ -f /bin/dbus-launch ]" &>/dev/null; then
+  local lib_missing=0
+
+  if ! proot-distro login "$distro" -- sh -c "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin command -v dbus-launch || [ -f /usr/bin/dbus-launch ] || [ -f /usr/local/bin/dbus-launch ] || [ -f /bin/dbus-launch ]" &>/dev/null; then
     dbus_missing=1
   fi
-  if ! proot-distro login "$distro" -- sh -c "env PATH=\$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin command -v pulseaudio || [ -f /usr/bin/pulseaudio ] || [ -f /usr/local/bin/pulseaudio ] || [ -f /bin/pulseaudio ]" &>/dev/null; then
+  if ! proot-distro login "$distro" -- sh -c "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin command -v pulseaudio || [ -f /usr/bin/pulseaudio ] || [ -f /usr/local/bin/pulseaudio ] || [ -f /bin/pulseaudio ]" &>/dev/null; then
     pulse_missing=1
   fi
 
-  if [ $dbus_missing -eq 1 ] || [ $pulse_missing -eq 1 ]; then
+  if [ -n "$de" ]; then
+    local bin_candidates=""
+    case "$de" in
+      xfce4) bin_candidates="xfce4-session xfwm4" ;;
+      lxqt) bin_candidates="lxqt-session" ;;
+      mate) bin_candidates="mate-session" ;;
+      kde) bin_candidates="startplasma-x11 kwin_x11 plasmashell" ;;
+      gnome|gnome-flashback) bin_candidates="gnome-session gnome-flashback metacity gnome-panel" ;;
+      budgie) bin_candidates="budgie-desktop budgie-session" ;;
+      cinnamon) bin_candidates="cinnamon-session" ;;
+      openbox) bin_candidates="openbox" ;;
+      *)
+        local raw_cmd="${DE_STARTCMD[$de]}"
+        if [ -n "$raw_cmd" ]; then
+          local clean_cmd
+          clean_cmd=$(echo "$raw_cmd" | awk '{for(i=1;i<=NF;i++) if($i !~ /^-/ && $i !~ /=/) {print $i; exit}}')
+          if [ -n "$clean_cmd" ]; then
+            bin_candidates="$clean_cmd"
+          fi
+        fi
+        ;;
+    esac
+
+    if [ -n "$bin_candidates" ]; then
+      if ! proot-distro login "$distro" -- sh -c "
+        export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        if command -v ldd >/dev/null 2>&1; then
+          for bin in \$bin_candidates; do
+            bin_path=\$(command -v \"\$bin\" 2>/dev/null)
+            if [ -n \"\$bin_path\" ] && [ -f \"\$bin_path\" ]; then
+              if ldd \"\$bin_path\" 2>/dev/null | grep -qi \"not found\"; then
+                exit 1
+              fi
+            fi
+          done
+        fi
+        exit 0
+      " &>/dev/null; then
+        lib_missing=1
+      fi
+    fi
+  fi
+
+  if [ $dbus_missing -eq 1 ] || [ $pulse_missing -eq 1 ] || [ $lib_missing -eq 1 ]; then
     local pm
     pm=$(get_distro_pkg_manager "$distro")
     
@@ -2270,6 +2683,9 @@ launch_desktop() {
         ;;
       apk)
         run_with_spinner "Updating packages" proot-distro login "$distro" -- apk update
+        if [ $lib_missing -eq 1 ]; then
+          run_with_spinner "Upgrading system packages" proot-distro login "$distro" -- apk upgrade
+        fi
         if [ $dbus_missing -eq 1 ]; then
           run_with_spinner "Installing dbus" proot-distro login "$distro" -- apk add --no-cache dbus dbus-x11
           if [ $? -ne 0 ] || ! proot-distro login "$distro" -- sh -c "command -v dbus-launch" &>/dev/null; then
@@ -2286,15 +2702,18 @@ launch_desktop() {
         ;;
       pacman)
         run_with_spinner "Updating packages" proot-distro login "$distro" -- pacman -Sy --noconfirm
+        if [ $lib_missing -eq 1 ]; then
+          run_with_spinner "Upgrading system packages" proot-distro login "$distro" -- pacman -Syu --noconfirm --overwrite '*'
+        fi
         if [ $dbus_missing -eq 1 ]; then
-          run_with_spinner "Installing dbus" proot-distro login "$distro" -- pacman -S --noconfirm --needed dbus
+          run_with_spinner "Installing dbus" proot-distro login "$distro" -- pacman -Syu --noconfirm --needed --overwrite '*' dbus
           if [ $? -ne 0 ] || ! proot-distro login "$distro" -- sh -c "command -v dbus-launch" &>/dev/null; then
             print_error "Failed to install D-Bus."
             exit 1
           fi
         fi
         if [ $pulse_missing -eq 1 ]; then
-          run_with_spinner "Installing pulseaudio" proot-distro login "$distro" -- pacman -S --noconfirm --needed pulseaudio
+          run_with_spinner "Installing pulseaudio" proot-distro login "$distro" -- pacman -Syu --noconfirm --needed --overwrite '*' pulseaudio
           if [ $? -ne 0 ]; then
             print_warn "Failed to install PulseAudio. Audio will be disabled."
           fi
@@ -2302,6 +2721,9 @@ launch_desktop() {
         ;;
       dnf)
         run_with_spinner "Updating packages" proot-distro login "$distro" -- dnf makecache
+        if [ $lib_missing -eq 1 ]; then
+          run_with_spinner "Upgrading system packages" proot-distro login "$distro" -- dnf upgrade -y
+        fi
         if [ $dbus_missing -eq 1 ]; then
           run_with_spinner "Installing dbus" proot-distro login "$distro" -- dnf install -y dbus-x11
           if [ $? -ne 0 ]; then
@@ -2321,6 +2743,9 @@ launch_desktop() {
         ;;
       xbps)
         run_with_spinner "Updating packages" proot-distro login "$distro" -- xbps-install -Sy
+        if [ $lib_missing -eq 1 ]; then
+          run_with_spinner "Upgrading system packages" proot-distro login "$distro" -- xbps-install -Su -y
+        fi
         if [ $dbus_missing -eq 1 ]; then
           run_with_spinner "Installing dbus" proot-distro login "$distro" -- xbps-install -y dbus
           if [ $? -ne 0 ] || ! proot-distro login "$distro" -- sh -c "command -v dbus-launch" &>/dev/null; then
@@ -2337,6 +2762,9 @@ launch_desktop() {
         ;;
       emerge)
         run_with_spinner "Updating packages" proot-distro login "$distro" -- emerge --sync
+        if [ $lib_missing -eq 1 ]; then
+          run_with_spinner "Upgrading system packages" proot-distro login "$distro" -- emerge --update --deep --newuse @world
+        fi
         if [ $dbus_missing -eq 1 ]; then
           run_with_spinner "Installing dbus" proot-distro login "$distro" -- emerge --ask=n sys-apps/dbus
           if [ $? -ne 0 ] || ! proot-distro login "$distro" -- sh -c "command -v dbus-launch" &>/dev/null; then
@@ -2379,6 +2807,32 @@ launch_desktop() {
     fi
   "
 
+  # Dynamically resolve startcmd from guest xsessions desktop files if not already populated
+  if [ -z "${DE_STARTCMD[$de]}" ]; then
+    local resolved_cmd
+    resolved_cmd=$(proot-distro login "$distro" -- sh -c "
+      export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      for f in /usr/share/xsessions/*.desktop; do
+        if [ -f \"\$f\" ]; then
+          exec_line=\$(grep -i '^Exec=' \"\$f\" | head -n1 | cut -d= -f2-)
+          if [ -n \"\$exec_line\" ]; then
+            echo \"\$exec_line\" | sed 's/ %[a-zA-Z]//g' | xargs
+            exit 0
+          fi
+        fi
+      done
+      exit 1
+    " 2>/dev/null)
+    if [ $? -eq 0 ] && [ -n "$resolved_cmd" ]; then
+      DE_STARTCMD[$de]="$resolved_cmd"
+      log "Dynamically resolved startcmd for custom DE $de: $resolved_cmd"
+    else
+      # Fallback to the DE name itself
+      DE_STARTCMD[$de]="$de"
+      log "Failed to dynamically resolve startcmd for custom DE $de, using fallback: $de"
+    fi
+  fi
+
   # Map DE to its start command wrapped with dbus-launch
   local startcmd
   case "$de" in
@@ -2412,7 +2866,7 @@ launch_desktop() {
         " 2>/dev/null || true
 
         proot-distro login "$distro" -- bash -c "
-          export PATH=\$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           if command -v cmake &>/dev/null && command -v valac &>/dev/null; then
             cd /tmp && rm -rf plank-reloaded 2>/dev/null || true
             git clone --depth=1 https://github.com/zquestz/plank-reloaded 2>/dev/null && \
@@ -2729,7 +3183,7 @@ EOF
               inst_cmd="env DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt-get install -y -o Dpkg::Options::=\"--force-confdef\" -o Dpkg::Options::=\"--force-confold\" -o APT::Solver=internal --fix-broken --fix-missing --allow-downgrades ${fb_pkg} gnome-terminal"
               ;;
             apk)    inst_cmd="apk add --no-cache ${fb_pkg} gnome-terminal" ;;
-            pacman) inst_cmd="pacman -S --noconfirm --needed ${fb_pkg}" ;;
+            pacman) inst_cmd="pacman -Syu --noconfirm --needed --overwrite '*' ${fb_pkg}" ;;
             dnf)    inst_cmd="dnf install -y ${fb_pkg}" ;;
             xbps)   inst_cmd="xbps-install -y ${fb_pkg} gnome-terminal" ;;
             *)      inst_cmd="" ;;
@@ -2754,7 +3208,7 @@ EOF
             " 2>/dev/null || true
 
             proot-distro login "$distro" -- bash -c "
-              export PATH=\$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+              export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
               if command -v cmake &>/dev/null && command -v valac &>/dev/null; then
                 cd /tmp && rm -rf plank-reloaded 2>/dev/null || true
                 git clone --depth=1 https://github.com/zquestz/plank-reloaded 2>/dev/null && \
@@ -2849,14 +3303,14 @@ EOF
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Display Output:"
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - VNC Address: ${ip_addr}:${vnc_port}"
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Resolution:  ${custom_res} (Independent)"
-      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - For miracast run: groot-desk miracast ${d_num} (optional)"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - For miracast run: groot-desk miracast ${distro} ${d_num} (optional)"
     else
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Termux-X11 session active."
       print_box_sep "─" "${GREEN}${BOLD}"
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "Display Outputs:"
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Phone Screen: View via Termux:X11 app"
       print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - VNC Mirror:   ${ip_addr}:${vnc_port} (Optional)"
-      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - For miracast run: groot-desk miracast ${d_num} (optional)"
+      print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - For miracast run: groot-desk miracast ${distro} ${d_num} (optional)"
     fi
 
     print_box_sep "─" "${GREEN}${BOLD}"
@@ -2892,7 +3346,7 @@ EOF
     fi
     echo -e "No VNC password required. Just connect."
     echo -e "To connect through Miracast, run the command:"
-    echo -e "   ${BOLD}${CYAN}groot-desk miracast ${d_num} (optional)${RESET}"
+    echo -e "   ${BOLD}${CYAN}groot-desk miracast ${distro} ${d_num} (optional)${RESET}"
     echo -e "${BOLD}${CYAN}====================================${RESET}"
     echo ""
 
@@ -2976,6 +3430,10 @@ run_wizard() {
     install_new_distro_wizard "$auto_yes"
     distro="$SELECTED_DISTRO"
     is_new=1
+    if [ -z "$distro" ]; then
+      print_info "No distribution selected or installation cancelled."
+      return 1
+    fi
   else
     distro="${options[$((choice - 1))]}"
   fi
@@ -3233,6 +3691,13 @@ install_new_distro_wizard() {
     ((i++))
   done <<< "$available"
 
+  # Add Custom OCI option
+  echo -e "  ${BOLD}[$i]${RESET} ${WHITE}Custom${RESET} (Docker Hub OCI image)"
+  echo -e "      ${GRAY}Search and install any custom OCI distribution from Docker Hub.${RESET}"
+  echo ""
+  options+=("custom")
+  ((i++))
+
   echo ""
   local choice=""
   while true; do
@@ -3247,37 +3712,32 @@ install_new_distro_wizard() {
 
   local distro="${options[$((choice - 1))]}"
   
-  if is_proot_distro_v5; then
-    local image="$distro"
-    case "$distro" in
-      kali)      image="kalilinux/kali-rolling" ;;
-      void)      image="voidlinux/voidlinux" ;;
-      artix)     image="artixlinux/artixlinux" ;;
-      gentoo)    image="gentoo/stage3" ;;
-      rocky)     image="rockylinux/rockylinux" ;;
-      manjaro)   image="manjaronetwork/manjaro" ;;
-      oracle)    image="oraclelinux" ;;
-    esac
-    print_step "Installing ${distro} from OCI image '${image}' (this may take a few minutes)..."
-    log "Installing distro: $distro using image: $image"
-    if proot-distro install --name "$distro" "$image"; then
-      print_success "${distro} installed successfully."
+  if [ "$distro" = "custom" ]; then
+    local custom_res
+    custom_res=$(run_custom_distro_search_flow)
+    if [ -n "$custom_res" ]; then
+      local alias_name image_name
+      alias_name=$(echo "$custom_res" | cut -d'|' -f1)
+      image_name=$(echo "$custom_res" | cut -d'|' -f2)
+      
+      config_set_distro_field "$alias_name" "oci_image" "$image_name"
+      config_set_distro_field "$alias_name" "custom_distro" "1"
+      
+      if cmd_install "$alias_name" "$image_name"; then
+        SELECTED_DISTRO="$alias_name"
+      else
+        SELECTED_DISTRO=""
+      fi
     else
-      print_error "Failed to install ${distro}. Check $LOG_FILE for details."
-      exit 1
+      install_new_distro_wizard "$auto_yes"
     fi
   else
-    print_step "Installing ${distro} (this may take a few minutes)..."
-    log "Installing distro: $distro"
-    if proot-distro install "$distro"; then
-      print_success "${distro} installed successfully."
+    if cmd_install "$distro"; then
+      SELECTED_DISTRO="$distro"
     else
-      print_error "Failed to install ${distro}. Check $LOG_FILE for details."
-      exit 1
+      SELECTED_DISTRO=""
     fi
   fi
-
-  SELECTED_DISTRO="$distro"
 }
 
 # -----------------------------------------------------------------------------
@@ -3425,18 +3885,18 @@ cmd_start() {
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "1. Termux:X11 Desktop (Display :1):"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Output:   Local phone screen app"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - VNC Mirror: ${ip_addr}:5900 (Optional)"
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - For miracast run: groot-desk miracast 1 (optional)"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - For miracast run: groot-desk miracast ${distro} 1 (optional)"
     print_box_sep "─" "${GREEN}${BOLD}"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "2. Wireless Desktop (Display :2):"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Address:    ${ip_addr}:5901"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Resolution: ${res_d2} (Wireless)"
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - For miracast run: groot-desk miracast 2 (optional)"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - For miracast run: groot-desk miracast ${distro} 2 (optional)"
     print_box_sep "─" "${GREEN}${BOLD}"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "3. HDMI Desktop (Display :3):"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Output:     Physical USB-C/HDMI monitor"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - Resolution: ${res_d3} (HDMI)"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - VNC Mirror: ${ip_addr}:5902 (Optional)"
-    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - For miracast run: groot-desk miracast 3 (optional)"
+    print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" "    - For miracast run: groot-desk miracast ${distro} 3 (optional)"
     print_box_sep "─" "${GREEN}${BOLD}"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Distro:      ${distro}"
     print_box_line "left" "${GREEN}${BOLD}" "${WHITE}" " - Desktop:     ${de}"
@@ -3468,6 +3928,10 @@ cmd_start() {
       echo -e "   - HDMI VNC Mirror:    ${BOLD}${GREEN}${ip_addr}:5902${RESET} (${res_d3})"
     fi
     echo -e "No VNC password required. Just connect."
+    echo -e "To connect through Miracast, run on each display option:"
+    echo -e "   - Termux:X11 Mirror:  ${BOLD}${CYAN}groot-desk miracast ${distro} 1 (optional)${RESET}"
+    echo -e "   - Wireless Desktop:   ${BOLD}${CYAN}groot-desk miracast ${distro} 2 (optional)${RESET}"
+    echo -e "   - HDMI VNC Mirror:    ${BOLD}${CYAN}groot-desk miracast ${distro} 3 (optional)${RESET}"
     echo -e "${BOLD}${CYAN}====================================${RESET}"
     echo ""
 
@@ -3530,7 +3994,7 @@ cmd_stop() {
   else
     run_with_spinner "Stopping session for ${target}" bash -c "
       # Find all active displays for this distro before killing the processes
-      pgrep -f 'proot-distro login.*${target}' | while read -r pid; do
+      (pgrep -f 'proot-distro login.*${target}' || pgrep -f 'proot.*${target}') | while read -r pid; do
         if [ -n \"\$pid\" ]; then
           local disp
           disp=\$(cat \"/proc/\$pid/cmdline\" 2>/dev/null | tr '\\0' ' ' | grep -Eo 'DISPLAY=:[0-9]+|DISPLAY= :[0-9]+' | grep -Eo ':[0-9]+')
@@ -3594,15 +4058,55 @@ cmd_status() {
      local display_num
      for display_num in {1..10}; do
        local is_running=0
-       if pgrep -f "termux-x11.*:${display_num}" &>/dev/null; then
-         if pgrep -f "proot-distro login.*${d}" | while read -r pid; do cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' | grep -q -E "DISPLAY=:${display_num}|DISPLAY= :${display_num}" && echo "yes"; done | grep -q "yes"; then
-           is_running=1
-         fi
-       elif pgrep -f "Xvfb.*:${display_num}" &>/dev/null; then
-         if pgrep -f "proot-distro login.*${d}" | while read -r pid; do cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' | grep -q -E "DISPLAY=:${display_num}|DISPLAY= :${display_num}" && echo "yes"; done | grep -q "yes"; then
-           is_running=2
-         fi
-       fi
+        if pgrep -f "termux-x11.*:${display_num}" &>/dev/null; then
+          if pgrep -f "proot" | while read -r pid; do
+            local cmdline
+            cmdline=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' || true)
+            if [[ "$cmdline" =~ "${d}" ]] && [[ "$cmdline" =~ "DISPLAY=:${display_num}" || "$cmdline" =~ "DISPLAY= :${display_num}" || "$cmdline" =~ "DISPLAY=envDISPLAY=:${display_num}" || "$cmdline" =~ "DISPLAY=x11DISPLAY=:${display_num}" ]]; then
+              echo "yes"
+              break
+            fi
+          done | grep -q "yes"; then
+            is_running=1
+          fi
+          # Fallback: if display server is running and container for this distro is active, associate them
+          if [ "$is_running" -eq 0 ]; then
+            if pgrep -f "proot" | while read -r pid; do
+              local cmdline
+              cmdline=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' || true)
+              if [[ "$cmdline" =~ "${d}" ]]; then
+                echo "yes"
+                break
+              fi
+            done | grep -q "yes"; then
+              is_running=1
+            fi
+          fi
+        elif pgrep -f "Xvfb.*:${display_num}" &>/dev/null; then
+          if pgrep -f "proot" | while read -r pid; do
+            local cmdline
+            cmdline=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' || true)
+            if [[ "$cmdline" =~ "${d}" ]] && [[ "$cmdline" =~ "DISPLAY=:${display_num}" || "$cmdline" =~ "DISPLAY= :${display_num}" || "$cmdline" =~ "DISPLAY=envDISPLAY=:${display_num}" || "$cmdline" =~ "DISPLAY=x11DISPLAY=:${display_num}" ]]; then
+              echo "yes"
+              break
+            fi
+          done | grep -q "yes"; then
+            is_running=2
+          fi
+          # Fallback: if display server is running and container for this distro is active, associate them
+          if [ "$is_running" -eq 0 ]; then
+            if pgrep -f "proot" | while read -r pid; do
+              local cmdline
+              cmdline=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' || true)
+              if [[ "$cmdline" =~ "${d}" ]]; then
+                echo "yes"
+                break
+              fi
+            done | grep -q "yes"; then
+              is_running=2
+            fi
+          fi
+        fi
        
        if [ "$is_running" -ne 0 ]; then
          local vnc_port=$((5899 + display_num))
@@ -3677,7 +4181,7 @@ cmd_status() {
 
   # Scan proot-distro login processes
   local proot_pids
-  proot_pids=$(pgrep -f "proot-distro login" 2>/dev/null)
+  proot_pids=$(pgrep -x "proot" 2>/dev/null || pgrep -f "proot-distro login" 2>/dev/null)
   if [ -n "$proot_pids" ]; then
     echo -e "  ${CYAN}PRoot Container Sessions:${RESET}"
     while read -r pid; do
@@ -3805,6 +4309,18 @@ cmd_install() {
   local distro="$1"
   local oci_image="${2:-}"  # optional: custom OCI image e.g. "ubuntu:24.04" or "kalilinux/kali-rolling"
 
+  # Check if standard Arch Linux is requested on ARM64 under PRoot Distro version 5
+  if [ "$distro" = "archlinux" ] && [ -z "$oci_image" ]; then
+    if is_proot_distro_v5; then
+      local system_arch
+      system_arch=$(uname -m)
+      if [[ "$system_arch" == "aarch64" || "$system_arch" == "arm64" ]]; then
+        oci_image="menci/archlinuxarm"
+        log "Overriding standard archlinux with arm64 compatible OCI image: $oci_image"
+      fi
+    fi
+  fi
+
   if [ -z "$distro" ]; then
     print_error "Specify a distribution to install. Example: groot-desk install kali"
     print_info  "For custom distros: groot-desk install myname ubuntu:24.04"
@@ -3822,7 +4338,7 @@ cmd_install() {
   installed=$(get_installed_distros)
   if echo "$installed" | grep -qx "$distro"; then
     print_warn "${distro} is already installed."
-    exit 0
+    return 0
   fi
 
   local available
@@ -3836,7 +4352,7 @@ cmd_install() {
       print_error "Distribution '${distro}' is not in the supported list and proot-distro v5 is required for custom installs."
       print_info "Supported distros:"
       echo "$available" | sed 's/^/  /'
-      exit 1
+      return 1
     fi
     echo ""
     print_warn "Distribution '${distro}' is not in the known list."
@@ -3849,16 +4365,37 @@ cmd_install() {
     oci_image=$(echo "$oci_image" | tr -d ' ')
     if [ -z "$oci_image" ]; then
       print_info "Cancelled."
-      exit 0
+      return 1
     fi
     # Store the OCI image in config so remove-desk and other commands know it is custom
     config_set_distro_field "$distro" "oci_image" "$oci_image"
     config_set_distro_field "$distro" "custom_distro" "1"
   fi
 
-  if is_proot_distro_v5; then
-    # Resolve known distros to their OCI images if no override provided
+  if [ -z "$oci_image" ] && [ $is_known -eq 1 ]; then
+    # Standard installation of a known distribution using its built-in recipe
+    print_step "Installing ${distro} (this may take a few minutes)..."
+    log "Installing distro: $distro using built-in recipe"
+    # Disable line wrapping to prevent progress bar wrapping
+    printf "\033[?7l"
+    proot-distro install "$distro"
+    local install_status=$?
+    # Re-enable line wrapping
+    printf "\033[?7h"
+    if [ $install_status -eq 0 ]; then
+      print_success "${distro} installed successfully."
+    else
+      print_error "Failed to install ${distro}. Check $LOG_FILE for details."
+      return 1
+    fi
+  else
+    # Custom OCI image installation (requires proot-distro v5)
+    if ! is_proot_distro_v5; then
+      print_error "Custom distro installs require proot-distro v5. Run: pkg upgrade proot-distro"
+      return 1
+    fi
     if [ -z "$oci_image" ]; then
+      # Resolve known distros to their OCI images if no override provided (for custom name installs)
       case "$distro" in
         kali)      oci_image="kalilinux/kali-rolling" ;;
         void)      oci_image="voidlinux/voidlinux" ;;
@@ -3872,25 +4409,18 @@ cmd_install() {
     fi
     print_step "Installing ${distro} from OCI image '${oci_image}' (this may take a few minutes)..."
     log "Installing distro: $distro using image: $oci_image"
-    if proot-distro install --name "$distro" "$oci_image"; then
+    # Disable line wrapping to prevent progress bar wrapping
+    printf "\033[?7l"
+    proot-distro install --name "$distro" "$oci_image"
+    local install_status=$?
+    # Re-enable line wrapping
+    printf "\033[?7h"
+    if [ $install_status -eq 0 ]; then
       print_success "${distro} installed successfully."
       [ -n "$oci_image" ] && config_set_distro_field "$distro" "oci_image" "$oci_image"
     else
       print_error "Failed to install ${distro}. Check $LOG_FILE for details."
-      exit 1
-    fi
-  else
-    if [ $is_known -eq 0 ]; then
-      print_error "Custom distro installs require proot-distro v5. Run: pkg upgrade proot-distro"
-      exit 1
-    fi
-    print_step "Installing ${distro} (this may take a few minutes)..."
-    log "Installing distro: $distro"
-    if proot-distro install "$distro"; then
-      print_success "${distro} installed successfully."
-    else
-      print_error "Failed to install ${distro}. Check $LOG_FILE for details."
-      exit 1
+      return 1
     fi
   fi
 }
@@ -4465,27 +4995,48 @@ cmd_miracast() {
     local found_distro=""
     local installed
     installed=$(get_installed_distros)
-    while read -r d; do
-      [ -z "$d" ] && continue
-      if pgrep -f "proot-distro login.*${d}" &>/dev/null; then
+    
+    local pids
+    pids=$(pgrep -x "proot" 2>/dev/null || pgrep -f "proot" 2>/dev/null || true)
+    if [ -n "$pids" ]; then
+      # First pass: try exact display matching in cmdline
+      while read -r pid; do
+        [ -z "$pid" ] && continue
+        local cmdline
+        cmdline=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' || true)
+        [ -z "$cmdline" ] && continue
+        
+        # Check if the process environment has the correct display
+        if [[ "$cmdline" =~ "DISPLAY=${display}" || "$cmdline" =~ "DISPLAY= ${display}" || "$cmdline" =~ "DISPLAY=envDISPLAY=${display}" || "$cmdline" =~ "DISPLAY=x11DISPLAY=${display}" ]]; then
+          while read -r d; do
+            [ -z "$d" ] && continue
+            if [[ "$cmdline" =~ "${d}" ]]; then
+              found_distro="$d"
+              break 2
+            fi
+          done <<< "$installed"
+        fi
+      done <<< "$pids"
+      
+      # Second pass: if display matching is inconclusive but the display port is active, fallback to any active proot distro
+      if [ -z "$found_distro" ]; then
         if pgrep -f "termux-x11.*$display" &>/dev/null || pgrep -f "Xvfb.*$display" &>/dev/null; then
-          if pgrep -f "proot-distro login.*${d}" | while read -r pid; do cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' | grep -q -E "DISPLAY=${display}|DISPLAY= ${display}" && echo "yes"; done | grep -q "yes"; then
-            found_distro="$d"
-            break
-          fi
+          while read -r pid; do
+            [ -z "$pid" ] && continue
+            local cmdline
+            cmdline=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' || true)
+            [ -z "$cmdline" ] && continue
+            
+            while read -r d; do
+              [ -z "$d" ] && continue
+              if [[ "$cmdline" =~ "${d}" ]]; then
+                found_distro="$d"
+                break 2
+              fi
+            done <<< "$installed"
+          done <<< "$pids"
         fi
       fi
-    done <<< "$installed"
-    
-    # Safe Fallback: if display matching is inconclusive but a distro session is active, associate it
-    if [ -z "$found_distro" ]; then
-      while read -r d; do
-        [ -z "$d" ] && continue
-        if pgrep -f "proot-distro login.*${d}" &>/dev/null; then
-          found_distro="$d"
-          break
-        fi
-      done <<< "$installed"
     fi
     
     if [ -z "$found_distro" ]; then
@@ -4602,6 +5153,7 @@ self_install() {
 # Entry point
 # -----------------------------------------------------------------------------
 config_init
+load_custom_des_from_config
 self_install
 
 COMMAND="${1:-wizard}"
