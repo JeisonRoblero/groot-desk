@@ -510,6 +510,10 @@ start_termux_x11_server() {
     am start --user 0 -n com.termux.x11/com.termux.x11.MainActivity &>/dev/null || true
     sleep 2.0
   fi
+
+  # Ensure the X11 socket is accessible by guest users
+  chmod 777 "/tmp/.X11-unix" "${TMPDIR}/.X11-unix" 2>/dev/null || true
+  chmod 777 "/tmp/.X11-unix/X${d_num}" "${TMPDIR}/.X11-unix/X${d_num}" 2>/dev/null || true
 }
 
 disable_phantom_killer() {
@@ -1705,7 +1709,7 @@ run_custom_de_search_flow() {
     run_with_spinner "Updating package database inside $distro" update_guest_repos "$distro" "$pm" >&2
 
     local search_results
-    search_results=$(search_guest_de_packages "$distro" "$pm" "$query" | head -n 25)
+    search_results=$(search_guest_de_packages "$distro" "$pm" "$query" 2>>"$LOG_FILE" | head -n 25)
 
     if [ -z "$search_results" ]; then
       echo -e "${RED}[error]${RESET} No matching packages found for \"$query\" inside $distro catalog." >/dev/tty
@@ -1743,12 +1747,33 @@ run_custom_de_search_flow() {
         DE_DESC["$selected_pkg"]="${descs[$((choice - 1))]}"
         DE_SIZE["$selected_pkg"]="unknown size"
         DE_GENERIC_PACKAGE["$selected_pkg"]="$selected_pkg"
-        
-        if [[ ! " ${DE_LIST[*]} " == *" $selected_pkg "* ]]; then
-          DE_LIST+=("$selected_pkg")
-        fi
 
-        echo "$selected_pkg"
+        # Auto-detect DE start command from package name to avoid showing the DE menu again
+        local auto_de=""
+        local pkg_lower
+        pkg_lower=$(echo "$selected_pkg" | tr '[:upper:]' '[:lower:]')
+        case "$pkg_lower" in
+          *kde*|*plasma*)      auto_de="kde" ;;
+          *xfce*)              auto_de="xfce4" ;;
+          *gnome*)             auto_de="gnome" ;;
+          *lxqt*|*lubuntu*)   auto_de="lxqt" ;;
+          *mate*)              auto_de="mate" ;;
+          *budgie*)            auto_de="budgie" ;;
+          *cinnamon*)          auto_de="cinnamon" ;;
+          *openbox*)           auto_de="openbox" ;;
+        esac
+
+        if [ -n "$auto_de" ]; then
+          # Save the user's exact package choice so the installer uses it instead of probing
+          config_set_distro_field "$distro" "custom_de_pkg" "$selected_pkg"
+          # Reuse the known DE entry so the start command is already defined
+          echo "$auto_de"
+        else
+          if [[ ! " ${DE_LIST[*]} " == *" $selected_pkg "* ]]; then
+            DE_LIST+=("$selected_pkg")
+          fi
+          echo "$selected_pkg"
+        fi
         return 0
       fi
       echo -e "${RED}[error]${RESET} Invalid option. Enter a number between 1 and $((count - 1)) or C." >/dev/tty
@@ -1846,6 +1871,7 @@ de_is_installed() {
   proot-distro login "$distro" -- sh -c "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin command -v $cmd || [ -f /usr/bin/$cmd ] || [ -f /usr/local/bin/$cmd ] || [ -f /bin/$cmd ] || [ -f /usr/sbin/$cmd ]" &>/dev/null
 }
 
+
 install_desktop_environment() {
   local distro="$1" de="$2" auto_yes="$3"
   ACTIVE_DISTRO="$distro"
@@ -1862,7 +1888,12 @@ install_desktop_environment() {
   # distro-specific package is installed and can be cleanly removed.
   local custom_distro
   custom_distro=$(config_get_distro_field "$distro" "custom_distro")
-  if [ "$pm" = "apt" ] && { [ "$pkg" = "$generic_pkg" ] || [ "${custom_distro}" = "1" ]; }; then
+  local user_picked_pkg
+  user_picked_pkg=$(config_get_distro_field "$distro" "custom_de_pkg")
+  if [ -n "$user_picked_pkg" ]; then
+    pkg="$user_picked_pkg"
+    print_success "Using selected package: ${pkg}"
+  elif [ "$pm" = "apt" ] && { [ "$pkg" = "$generic_pkg" ] || [ "${custom_distro}" = "1" ]; }; then
     print_step "Probing available desktop packages for ${de} in ${distro}..."
     local probe_candidates=""
     case "$de" in
@@ -1902,11 +1933,12 @@ install_desktop_environment() {
 
   if de_is_installed "$distro" "$de"; then
     print_success "${de} is already installed in ${distro}."
+
     return 0
   fi
 
   if [ "$auto_yes" != "y" ]; then
-    read -rp "$(echo -e "${YELLOW}${de} is not installed. Install it? [Y/n]: ${RESET}")" confirm
+    read -rp "$(echo -e "${YELLOW}${pkg} is not installed. Install it? [Y/n]: ${RESET}")" confirm
     confirm="${confirm:-Y}"
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
       print_error "Cannot continue without a desktop environment."
@@ -1914,7 +1946,7 @@ install_desktop_environment() {
     fi
   fi
 
-  print_step "Installing ${de} inside ${distro}..."
+  print_step "Installing ${pkg} inside ${distro}..."
   log "Installing DE: $de in distro: $distro"
 
   local start_log_lines=0
@@ -2121,6 +2153,7 @@ install_desktop_environment() {
     else
       print_success "${de} installed successfully."
     fi
+
     log "DE installed: $de in $distro"
     restore_distro_tools "$distro"
     return 0
@@ -2167,7 +2200,9 @@ select_user() {
   local distro="$1" auto_yes="$2"
 
   if [ "$auto_yes" = "y" ]; then
-    SELECTED_USER=""
+    local saved_user
+    saved_user=$(config_get_distro_field "$distro" "user")
+    SELECTED_USER="${saved_user}"
     return
   fi
 
@@ -2184,6 +2219,19 @@ select_user() {
     users+=("$u")
   done <<< "$raw_users"
 
+  local saved_user
+  saved_user=$(config_get_distro_field "$distro" "user")
+  saved_user="${saved_user:-root}"
+
+  local default_choice=1
+  local i=1
+  for u in "${users[@]}"; do
+    if [ "$u" = "$saved_user" ]; then
+      default_choice=$i
+    fi
+    ((i++))
+  done
+
   echo "" >/dev/tty
   echo -e "${BOLD}${WHITE}Select a user:${RESET}" >/dev/tty
   echo "" >/dev/tty
@@ -2191,7 +2239,7 @@ select_user() {
   local i=1
   for u in "${users[@]}"; do
     local tag=""
-    [ "$i" -eq 1 ] && tag="  ${GRAY}(default)${RESET}"
+    [ "$i" -eq "$default_choice" ] && tag="  ${GRAY}(default)${RESET}"
     echo -e "  ${BOLD}[$i]${RESET} ${WHITE}${u}${RESET}${tag}" >/dev/tty
     ((i++))
   done
@@ -2202,7 +2250,7 @@ select_user() {
   while true; do
     read -rp "$(echo -e "${CYAN}Select [1-${i}] (enter for default): ${RESET}")" choice </dev/tty
     choice=$(echo "$choice" | tr -d '\r' | tr -d ' ')
-    choice="${choice:-1}"
+    choice="${choice:-$default_choice}"
     if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$i" ]; then
       break
     fi
@@ -2219,8 +2267,12 @@ select_user() {
     echo "" >/dev/tty
 
     run_with_spinner "Creating user ${username}" proot-distro login "$distro" -- bash -c "
-      id '$username' &>/dev/null || useradd -m -s /bin/bash '$username'
+      id '$username' &>/dev/null || useradd -m -s /bin/bash -G wheel,sudo '$username' 2>/dev/null || useradd -m -s /bin/bash '$username'
       echo '$username:$password' | chpasswd
+      mkdir -p /home/$username && chown $username:$username /home/$username 2>/dev/null || true
+      command -v usermod &>/dev/null && { usermod -aG wheel '$username' 2>/dev/null || true; usermod -aG sudo '$username' 2>/dev/null || true; }
+      grep -q '^%wheel' /etc/sudoers 2>/dev/null || echo '%wheel ALL=(ALL) ALL' >> /etc/sudoers
+      grep -q '^%sudo' /etc/sudoers 2>/dev/null || echo '%sudo ALL=(ALL) ALL' >> /etc/sudoers
     "
     if [ $? -eq 0 ]; then
       print_success "User '${username}' created with password '${password}'."
@@ -2544,6 +2596,9 @@ launch_desktop() {
   # Terminate any orphaned host logins for this distro to release lock handles on this specific display
   pgrep -f "proot" | while read -r pid; do
     [ -z "$pid" ] && continue
+    [ "$pid" -eq "$$" ] 2>/dev/null && continue
+    [ "$pid" -eq "$BASHPID" ] 2>/dev/null && continue
+    [ "$(cat "/proc/$pid/comm" 2>/dev/null)" != "proot" ] && continue
     local cmdline
     cmdline=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' || true)
     if [[ "$cmdline" =~ "${distro}" ]] && [[ "$cmdline" =~ "DISPLAY=${display}" || "$cmdline" =~ "DISPLAY= ${display}" ]]; then
@@ -3057,8 +3112,9 @@ EOF
     # Launch desktop container process
     local launch_pid
     if [ -n "$user" ]; then
+      local safe_startcmd="${startcmd//\'/\'\\\'\'}"
       proot-distro login "$distro" --shared-tmp ${bind_args} -- bash -c \
-        "uid=\$(id -u ${user} 2>/dev/null || echo 1000) && uname=\$(id -un ${user} 2>/dev/null || echo ${user}) && mkdir -p /run/user/\$uid /run/dbus /run/systemd/sessions /run/systemd/users /run/systemd/seats && chmod 700 /run/user/\$uid && printf \"UID=\${uid}\nUSER=\${uname}\nACTIVE=1\nSEAT=seat0\nSESSION=1\nTYPE=x11\nCLASS=user\nDESKTOP=gnome\nSTATE=active\nVTNR=1\n\" > /run/systemd/sessions/1 && ln -sf /run/systemd/sessions/1 /run/systemd/sessions/c1 2>/dev/null || true && printf \"\${uid}\n\" > /run/systemd/users/\${uid} && printf 'Sessions=1\nActiveSession=1\nCanSuspend=no\nCanHibernate=no\n' > /run/systemd/seats/seat0 && (command -v elogind >/dev/null 2>&1 && { pgrep -x elogind >/dev/null || elogind & sleep 1; } || true) && unset DBUS_SESSION_BUS_ADDRESS && export PULSE_SERVER=127.0.0.1 && export XDG_RUNTIME_DIR=/run/user/\$uid && export XDG_SESSION_ID=1 && export XDG_SEAT=seat0 && export XDG_VTNR=1 && export XDG_SESSION_TYPE=x11 && export XDG_CURRENT_DESKTOP=\"${current_desktop}\" && export DESKTOP_SESSION=\"${de}\" && export XDG_SESSION_CLASS=user && export XDG_SESSION_DESKTOP=\"${de}\" && export SYSTEMD_IGNORE_CHROOT=1 && export ${env_vars} && su - ${user} -c 'unset DBUS_SESSION_BUS_ADDRESS && env DISPLAY=${display} XDG_SESSION_ID=1 XDG_SEAT=seat0 XDG_VTNR=1 XDG_SESSION_TYPE=x11 SYSTEMD_IGNORE_CHROOT=1 XDG_RUNTIME_DIR=/run/user/\$(id -u) XDG_CURRENT_DESKTOP=\"${current_desktop}\" DESKTOP_SESSION=\"${de}\" XDG_SESSION_CLASS=user XDG_SESSION_DESKTOP=\"${de}\" ${env_vars} ${startcmd}'" >> "$LOG_FILE" 2>&1 &
+        "uid=\$(id -u ${user} 2>/dev/null || echo 1000) && uname=\$(id -un ${user} 2>/dev/null || echo ${user}) && mkdir -p /run/user/\$uid /run/dbus /run/systemd/sessions /run/systemd/users /run/systemd/seats && chmod 700 /run/user/\$uid && chown \text{uname}:\text{uname} /run/user/\$uid 2>/dev/null || true && printf \"UID=\${uid}\nUSER=\${uname}\nACTIVE=1\nSEAT=seat0\nSESSION=1\nTYPE=x11\nCLASS=user\nDESKTOP=gnome\nSTATE=active\nVTNR=1\n\" > /run/systemd/sessions/1 && ln -sf /run/systemd/sessions/1 /run/systemd/sessions/c1 2>/dev/null || true && printf \"\${uid}\n\" > /run/systemd/users/\${uid} && printf 'Sessions=1\nActiveSession=1\nCanSuspend=no\nCanHibernate=no\n' > /run/systemd/seats/seat0 && (command -v elogind >/dev/null 2>&1 && { pgrep -x elogind >/dev/null || elogind & sleep 1; } || true) && unset DBUS_SESSION_BUS_ADDRESS && export PULSE_SERVER=127.0.0.1 && export XDG_RUNTIME_DIR=/run/user/\$uid && export XDG_SESSION_ID=1 && export XDG_SEAT=seat0 && export XDG_VTNR=1 && export XDG_SESSION_TYPE=x11 && export XDG_CURRENT_DESKTOP=\"${current_desktop}\" && export DESKTOP_SESSION=\"${de}\" && export XDG_SESSION_CLASS=user && export XDG_SESSION_DESKTOP=\"${de}\" && export SYSTEMD_IGNORE_CHROOT=1 && export ${env_vars} && su ${user} -c 'unset DBUS_SESSION_BUS_ADDRESS && export HOME=/home/${user} && export USER=${user} && export LOGNAME=${user} && env DISPLAY=${display} XDG_SESSION_ID=1 XDG_SEAT=seat0 XDG_VTNR=1 XDG_SESSION_TYPE=x11 SYSTEMD_IGNORE_CHROOT=1 XDG_RUNTIME_DIR=/run/user/\$(id -u) XDG_CURRENT_DESKTOP=\"${current_desktop}\" DESKTOP_SESSION=\"${de}\" XDG_SESSION_CLASS=user XDG_SESSION_DESKTOP=\"${de}\" ${env_vars} ${safe_startcmd}'" >> "$LOG_FILE" 2>&1 &
       launch_pid=$!
       disown $! 2>/dev/null || true
     else
@@ -3560,6 +3616,7 @@ get_distro_meta() {
     oracle)
       echo "Oracle Linux|Enterprise Linux distribution optimized for Oracle workloads|~60 MB"
       ;;
+
     termux)
       echo "Termux Environment|Self-contained Termux distribution container|~10 MB"
       ;;
@@ -3731,6 +3788,7 @@ install_new_distro_wizard() {
     else
       install_new_distro_wizard "$auto_yes"
     fi
+
   else
     if cmd_install "$distro"; then
       SELECTED_DISTRO="$distro"
@@ -3977,15 +4035,74 @@ cmd_stop() {
 
   if [ -z "$target" ]; then
     run_with_spinner "Stopping all sessions" bash -c "
-      pgrep -f 'proot' | while read -r pid; do
-        if [ -n \"\$pid\" ] && ! cat \"/proc/\$pid/cmdline\" 2>/dev/null | tr '\\0' ' ' | grep -q 'groot-desk'; then
-          kill -9 \"\$pid\" 2>/dev/null || true
+      # Find all active proot PIDs
+      local proot_pids=\"\"
+      for p_dir in /proc/[0-9]*; do
+        local p=\${p_dir#/proc/}
+        [ \"\$p\" -eq \"\$\$\" ] 2>/dev/null && continue
+        [ \"\$p\" -eq \"\$BASHPID\" ] 2>/dev/null && continue
+        if [ -f \"/proc/\$p/comm\" ] && [ \"\$(cat \"/proc/\$p/comm\" 2>/dev/null)\" = \"proot\" ]; then
+          proot_pids=\"\$proot_pids \$p\"
         fi
       done
-      pkill -9 -f termux-x11 2>/dev/null || true
-      pkill -9 -f Xwayland 2>/dev/null || true
-      pkill -9 -f Xvfb 2>/dev/null || true
-      pkill -9 -f x11vnc 2>/dev/null || true
+
+      # Kill any guest processes running inside any chroot containers
+      for p_dir in /proc/[0-9]*; do
+        local p=\${p_dir#/proc/}
+        [ \"\$p\" -eq \"\$\$\" ] 2>/dev/null && continue
+        [ \"\$p\" -eq \"\$BASHPID\" ] 2>/dev/null && continue
+        [ \"\$p\" -eq \"\$PPID\" ] 2>/dev/null && continue
+
+        local is_guest=0
+
+        # Check 1: check if maps file contains the proot-distro installed-rootfs path
+        if [ -f \"/proc/\$p/maps\" ] && grep -q \"/proot-distro/installed-rootfs/\" \"/proc/\$p/maps\" 2>/dev/null; then
+          is_guest=1
+        fi
+
+        # Check 2: check if /proc/\$p/exe points inside any proot-distro installed-rootfs
+        if [ \"\$is_guest\" -eq 0 ]; then
+          local p_exe
+          p_exe=\$(readlink \"/proc/\$p/exe\" 2>/dev/null)
+          if [[ \"\$p_exe\" == *\"/proot-distro/installed-rootfs/\"* ]]; then
+            is_guest=1
+          fi
+        fi
+
+        # Check 3: check if TracerPid is in our proot_pids list
+        if [ \"\$is_guest\" -eq 0 ] && [ -f \"/proc/\$p/status\" ]; then
+          local tracer=0
+          while IFS= read -r line; do
+            if [[ \"\$line\" =~ ^TracerPid:[[:space:]]*([0-9]+) ]]; then
+              tracer=\"\${BASH_REMATCH[1]}\"
+              break
+            fi
+          done < \"/proc/\$p/status\" 2>/dev/null
+          
+          if [ -n \"\$tracer\" ] && [ \"\$tracer\" -ne 0 ] 2>/dev/null; then
+            for target_ppid in \$proot_pids; do
+              if [ \"\$tracer\" -eq \"\$target_ppid\" ] 2>/dev/null; then
+                is_guest=1
+                break
+              fi
+            done
+          fi
+        fi
+
+        if [ \"\$is_guest\" -eq 1 ]; then
+          kill -9 \"\$p\" 2>/dev/null || true
+        fi
+      done
+
+      # Now kill the proot processes themselves
+      for p in \$proot_pids; do
+        kill -9 \"\$p\" 2>/dev/null || true
+      done
+
+      pkill -9 -x termux-x11 2>/dev/null || true
+      pkill -9 -x Xwayland 2>/dev/null || true
+      pkill -9 -x Xvfb 2>/dev/null || true
+      pkill -9 -x x11vnc 2>/dev/null || true
       rm -f /tmp/.X11-unix/X* \${TMPDIR}/.X11-unix/X* 2>/dev/null
       rm -f /tmp/.X*-lock \${TMPDIR}/.X*-lock 2>/dev/null
       rm -f /tmp/.tX*-lock \${TMPDIR}/.tX*-lock 2>/dev/null
@@ -3995,7 +4112,7 @@ cmd_stop() {
     run_with_spinner "Stopping session for ${target}" bash -c "
       # Find all active displays for this distro before killing the processes
       (pgrep -f 'proot-distro login.*${target}' || pgrep -f 'proot.*${target}') | while read -r pid; do
-        if [ -n \"\$pid\" ]; then
+        if [ -n \"\$pid\" ] && [ \"\$pid\" -ne \"\$\$\" ] && [ \"\$pid\" -ne \"\$BASHPID\" ] && [ \"\$pid\" -ne \"\$PPID\" ] 2>/dev/null && [ \"\$(cat \"/proc/\$pid/comm\" 2>/dev/null)\" = \"proot\" ]; then
           local disp
           disp=\$(cat \"/proc/\$pid/cmdline\" 2>/dev/null | tr '\\0' ' ' | grep -Eo 'DISPLAY=:[0-9]+|DISPLAY= :[0-9]+' | grep -Eo ':[0-9]+')
           if [ -n \"\$disp\" ]; then
@@ -4004,10 +4121,11 @@ cmd_stop() {
         fi
       done | sort -u | while read -r display; do
         if [ -n \"\$display\" ]; then
-          pkill -9 -f \"termux-x11.*\$display\" 2>/dev/null || true
-          pkill -9 -f \"Xwayland.*\$display\" 2>/dev/null || true
-          pkill -9 -f \"Xvfb.*\$display\" 2>/dev/null || true
-          pkill -9 -f \"x11vnc.*\$display\" 2>/dev/null || true
+          for comm in termux-x11 Xwayland Xvfb x11vnc; do
+            pgrep -f \"\${comm}.*\$display\" | while read -r p; do
+              [ -n \"\$p\" ] && [ \"\$p\" -ne \"\$\$\" ] && [ \"\$p\" -ne \"\$BASHPID\" ] && [ \"\$p\" -ne \"\$PPID\" ] 2>/dev/null && kill -9 \"\$p\" 2>/dev/null || true
+            done
+          done
           local d_num=\"\${display#*:}\"
           rm -f \"/tmp/.X11-unix/X\${d_num}\" \"\${TMPDIR}/.X11-unix/X\${d_num}\" 2>/dev/null
           rm -f \"/tmp/.X\${d_num}-lock\" \"\${TMPDIR}/.X\${d_num}-lock\" 2>/dev/null
@@ -4015,10 +4133,72 @@ cmd_stop() {
         fi
       done
       
-      pgrep -f 'proot.*${target}' | while read -r pid; do
-        if [ -n \"\$pid\" ] && ! cat \"/proc/\$pid/cmdline\" 2>/dev/null | tr '\\0' ' ' | grep -q 'groot-desk'; then
-          kill -9 \"\$pid\" 2>/dev/null || true
+      # Find all active proot PIDs for this distro target
+      local proot_pids=\"\"
+      for p_dir in /proc/[0-9]*; do
+        local p=\${p_dir#/proc/}
+        [ \"\$p\" -eq \"\$\$\" ] 2>/dev/null && continue
+        [ \"\$p\" -eq \"\$BASHPID\" ] 2>/dev/null && continue
+        if [ -f \"/proc/\$p/comm\" ] && [ \"\$(cat \"/proc/\$p/comm\" 2>/dev/null)\" = \"proot\" ]; then
+          local p_cmd
+          p_cmd=\$(cat \"/proc/\$p/cmdline\" 2>/dev/null | tr '\\0' ' ')
+          if [[ \"\$p_cmd\" == *\"/proot-distro/installed-rootfs/${target}\"* ]]; then
+            proot_pids=\"\$proot_pids \$p\"
+          fi
         fi
+      done
+
+      # Kill any guest processes running inside this specific distro's rootfs
+      for p_dir in /proc/[0-9]*; do
+        local p=\${p_dir#/proc/}
+        [ \"\$p\" -eq \"\$\$\" ] 2>/dev/null && continue
+        [ \"\$p\" -eq \"\$BASHPID\" ] 2>/dev/null && continue
+        [ \"\$p\" -eq \"\$PPID\" ] 2>/dev/null && continue
+
+        local is_guest=0
+
+        # Check 1: check if maps file contains the target's rootfs path
+        if [ -f \"/proc/\$p/maps\" ] && grep -q \"/proot-distro/installed-rootfs/${target}\" \"/proc/\$p/maps\" 2>/dev/null; then
+          is_guest=1
+        fi
+
+        # Check 2: check if /proc/\$p/exe points inside the target's rootfs
+        if [ \"\$is_guest\" -eq 0 ]; then
+          local p_exe
+          p_exe=\$(readlink \"/proc/\$p/exe\" 2>/dev/null)
+          if [[ \"\$p_exe\" == *\"/proot-distro/installed-rootfs/${target}\"* ]]; then
+            is_guest=1
+          fi
+        fi
+
+        # Check 3: check if TracerPid is in our proot_pids list
+        if [ \"\$is_guest\" -eq 0 ] && [ -f \"/proc/\$p/status\" ]; then
+          local tracer=0
+          while IFS= read -r line; do
+            if [[ \"\$line\" =~ ^TracerPid:[[:space:]]*([0-9]+) ]]; then
+              tracer=\"\${BASH_REMATCH[1]}\"
+              break
+            fi
+          done < \"/proc/\$p/status\" 2>/dev/null
+          
+          if [ -n \"\$tracer\" ] && [ \"\$tracer\" -ne 0 ] 2>/dev/null; then
+            for target_ppid in \$proot_pids; do
+              if [ \"\$tracer\" -eq \"\$target_ppid\" ] 2>/dev/null; then
+                is_guest=1
+                break
+              fi
+            done
+          fi
+        fi
+
+        if [ \"\$is_guest\" -eq 1 ]; then
+          kill -9 \"\$p\" 2>/dev/null || true
+        fi
+      done
+
+      # Now kill the proot processes themselves
+      for p in \$proot_pids; do
+        kill -9 \"\$p\" 2>/dev/null || true
       done
     "
     log "Session stopped for distro: $target"
@@ -4246,10 +4426,45 @@ cmd_kill() {
     if [ -n "$found_distro" ]; then
       cmd_stop "$found_distro"
     else
+      local p_list=""
       pgrep -f "proot" | while read -r pid; do
-        if [ -n "$pid" ] && cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' | grep -q -E "DISPLAY=${target}|DISPLAY= ${target}"; then
-          kill -9 "$pid" 2>/dev/null || true
+        if [ -n "$pid" ] && [ "$pid" -ne "$$" ] && [ "$pid" -ne "$BASHPID" ] && [ "$pid" -ne "$PPID" ] 2>/dev/null && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = "proot" ]; then
+          if cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' | grep -q -E "DISPLAY=${target}|DISPLAY= ${target}"; then
+            p_list="$p_list $pid"
+          fi
         fi
+      done
+
+      # Kill any guest processes ptraced by these proot processes
+      for p_dir in /proc/[0-9]*; do
+        local p=${p_dir#/proc/}
+        [ "$p" -eq "$$" ] 2>/dev/null && continue
+        [ "$p" -eq "$BASHPID" ] 2>/dev/null && continue
+        [ "$p" -eq "$PPID" ] 2>/dev/null && continue
+        
+        if [ -f "$p_dir/status" ]; then
+          local tracer=0
+          while IFS= read -r line; do
+            if [[ "$line" =~ ^TracerPid:[[:space:]]*([0-9]+) ]]; then
+              tracer="${BASH_REMATCH[1]}"
+              break
+            fi
+          done < "$p_dir/status" 2>/dev/null
+          
+          if [ -n "$tracer" ] && [ "$tracer" -ne 0 ] 2>/dev/null; then
+            for target_ppid in $p_list; do
+              if [ "$tracer" -eq "$target_ppid" ] 2>/dev/null; then
+                kill -9 "$p" 2>/dev/null || true
+                break
+              fi
+            done
+          fi
+        fi
+      done
+
+      # Kill the proot processes themselves
+      for p in $p_list; do
+        kill -9 "$p" 2>/dev/null || true
       done
       print_success "Sessions on display ${target} killed."
     fi
@@ -4293,10 +4508,46 @@ cmd_list() {
     display=$(config_get_distro_field "$d" "display")
     user=$(config_get_distro_field "$d" "user")
 
+    # Probe installed desktop environments in a single login session
+    local probe_cmd
+    probe_cmd=$(proot-distro login "$d" -- sh -c '
+      export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      # 1. Probe xsessions desktop files mapping to friendly names
+      for f in /usr/share/xsessions/*.desktop; do
+        if [ -f "$f" ]; then
+          name=$(basename "$f" .desktop | tr "[A-Z]" "[a-z]")
+          case "$name" in
+            *xfce*) echo "xfce4" ;;
+            *plasma*|*kde*) echo "kde" ;;
+            *gnome*|*ubuntu*) echo "gnome" ;;
+            *mate*) echo "mate" ;;
+            *lxqt*) echo "lxqt" ;;
+            *budgie*) echo "budgie" ;;
+            *cinnamon*) echo "cinnamon" ;;
+            *openbox*) echo "openbox" ;;
+          esac
+        fi
+      done
+      # 2. Probe command binaries for standard list (mute command -v output)
+      for cmd_de in xfce4:startxfce4 lxqt:startlxqt mate:mate-session kde:startplasma-x11 gnome:gnome-flashback budgie:budgie-desktop cinnamon:cinnamon-session openbox:openbox-session; do
+        de_name=${cmd_de%%:*}
+        de_bin=${cmd_de#*:}
+        if command -v "$de_bin" >/dev/null 2>&1 || [ -f "/usr/bin/$de_bin" ] || [ -f "/usr/local/bin/$de_bin" ] || [ -f "/bin/$de_bin" ] || [ -f "/usr/sbin/$de_bin" ]; then
+          echo "$de_name"
+        fi
+      done
+    ' 2>/dev/null)
+
+    local installed_des="none"
+    if [ -n "$probe_cmd" ]; then
+      installed_des=$(echo "$probe_cmd" | sort -u | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g')
+    fi
+
     echo -e "  ${BOLD}[${i}]${RESET} ${WHITE}${d}${RESET}"
-    [ -n "$last_de" ]  && echo -e "      ${GRAY}Last desktop: ${last_de}${RESET}"
-    [ -n "$display" ]  && echo -e "      ${GRAY}Last display: ${display}${RESET}"
-    [ -n "$user" ]     && echo -e "      ${GRAY}User: ${user}${RESET}"
+    [ -n "$installed_des" ] && echo -e "      ${GRAY}Desktop environments: ${installed_des}${RESET}"
+    [ -n "$last_de" ]       && echo -e "      ${GRAY}Last desktop:         ${last_de}${RESET}"
+    [ -n "$display" ]       && echo -e "      ${GRAY}Last display:         ${display}${RESET}"
+    [ -n "$user" ]          && echo -e "      ${GRAY}User:                 ${user}${RESET}"
     echo ""
     ((i++))
   done <<< "$installed"
