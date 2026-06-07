@@ -242,7 +242,13 @@ cleanup() {
       if [ -f /usr/sbin/policy-rc.d.created_by_groot ]; then
         rm -f /usr/sbin/policy-rc.d /usr/sbin/policy-rc.d.created_by_groot
       fi
-      for cmd in updatedb updatedb.plocate systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl; do
+      if command -v dpkg-divert >/dev/null; then
+        for path in /usr/bin/updatedb /usr/sbin/updatedb /usr/bin/updatedb.plocate /usr/sbin/updatedb.plocate /usr/bin/updatedb.mlocate /usr/sbin/updatedb.mlocate /bin/updatedb /sbin/updatedb; do
+          rm -f "$path"
+          dpkg-divert --local --rename --remove "$path" &>/dev/null || true
+        done
+      fi
+      for cmd in systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl; do
         for dir in /usr/bin /usr/sbin /bin /sbin; do
           [ -f "$dir/$cmd.bak" ] && mv "$dir/$cmd.bak" "$dir/$cmd"
         done
@@ -643,12 +649,38 @@ get_lan_ip() {
   echo "127.0.0.1"
 }
 
+get_guest_codename() {
+  local distro="$1"
+  local codename=""
+  codename=$(proot-distro login "$distro" -- sh -c '. /etc/os-release && echo "$VERSION_CODENAME"' 2>/dev/null || true)
+  codename=$(echo "$codename" | tr -d '\r\n' | tr -d ' ')
+  if [ -z "$codename" ]; then
+    codename=$(proot-distro login "$distro" -- sh -c 'grep -oP "(?<=VERSION_CODENAME=)[a-zA-Z0-9_-]+" /etc/os-release' 2>/dev/null || true)
+    codename=$(echo "$codename" | tr -d '\r\n' | tr -d ' ')
+  fi
+  if [ -z "$codename" ]; then
+    codename=$(proot-distro login "$distro" -- sh -c '. /etc/os-release && echo "$VERSION"' 2>/dev/null | grep -oE '[a-zA-Z]+' | head -n1 || true)
+    codename=$(echo "$codename" | tr -d '\r\n' | tr -d ' ' | tr '[:upper:]' '[:lower:]')
+  fi
+  if [ -z "$codename" ]; then
+    case "$distro" in
+      ubuntu) codename="noble" ;;
+      debian) codename="bookworm" ;;
+      kali)   codename="kali-rolling" ;;
+    esac
+  fi
+  echo "$codename"
+}
+
 optimize_distro_mirrors() {
   local distro="$1"
   local pm="$2"
   
   case "$pm" in
     apt)
+      local codename
+      codename=$(get_guest_codename "$distro")
+      
       case "$distro" in
         kali)
           proot-distro login "$distro" -- bash -c "
@@ -667,9 +699,9 @@ optimize_distro_mirrors() {
             rm -f /etc/apt/sources.list.d/* 2>/dev/null || true
             rm -f /etc/apt/preferences.d/* 2>/dev/null || true
             mkdir -p /etc/apt/preferences.d
-            echo 'Package: *' > /etc/apt/preferences.d/99noble-force
-            echo 'Pin: release n=noble*' >> /etc/apt/preferences.d/99noble-force
-            echo 'Pin-Priority: 1001' >> /etc/apt/preferences.d/99noble-force
+            echo 'Package: *' > /etc/apt/preferences.d/99${codename}-force
+            echo 'Pin: release n=${codename}*' >> /etc/apt/preferences.d/99${codename}-force
+            echo 'Pin-Priority: 1001' >> /etc/apt/preferences.d/99${codename}-force
             mkdir -p /etc/apt/apt.conf.d
             echo 'APT::Get::AutomaticRemove \"0\";' > /etc/apt/apt.conf.d/99-disable-autoremove
             echo 'APT::Get::HideAutoRemove \"1\";' >> /etc/apt/apt.conf.d/99-disable-autoremove
@@ -678,14 +710,14 @@ optimize_distro_mirrors() {
             fi
             arch=\$(dpkg --print-architecture 2>/dev/null || echo 'arm64')
             if [ \"\$arch\" = \"amd64\" ] || [ \"\$arch\" = \"i386\" ]; then
-              echo 'deb http://archive.ubuntu.com/ubuntu/ noble main restricted universe multiverse' > /etc/apt/sources.list
-              echo 'deb http://archive.ubuntu.com/ubuntu/ noble-updates main restricted universe multiverse' >> /etc/apt/sources.list
-              echo 'deb http://security.ubuntu.com/ubuntu/ noble-security main restricted universe multiverse' >> /etc/apt/sources.list
-              echo 'deb http://mirrors.kernel.org/ubuntu/ noble main restricted universe multiverse' >> /etc/apt/sources.list
+              echo 'deb http://archive.ubuntu.com/ubuntu/ ${codename} main restricted universe multiverse' > /etc/apt/sources.list
+              echo 'deb http://archive.ubuntu.com/ubuntu/ ${codename}-updates main restricted universe multiverse' >> /etc/apt/sources.list
+              echo 'deb http://security.ubuntu.com/ubuntu/ ${codename}-security main restricted universe multiverse' >> /etc/apt/sources.list
+              echo 'deb http://mirrors.kernel.org/ubuntu/ ${codename} main restricted universe multiverse' >> /etc/apt/sources.list
             else
-              echo 'deb http://ports.ubuntu.com/ubuntu-ports/ noble main restricted universe multiverse' > /etc/apt/sources.list
-              echo 'deb http://ports.ubuntu.com/ubuntu-ports/ noble-updates main restricted universe multiverse' >> /etc/apt/sources.list
-              echo 'deb http://ports.ubuntu.com/ubuntu-ports/ noble-security main restricted universe multiverse' >> /etc/apt/sources.list
+              echo 'deb http://ports.ubuntu.com/ubuntu-ports/ ${codename} main restricted universe multiverse' > /etc/apt/sources.list
+              echo 'deb http://ports.ubuntu.com/ubuntu-ports/ ${codename}-updates main restricted universe multiverse' >> /etc/apt/sources.list
+              echo 'deb http://ports.ubuntu.com/ubuntu-ports/ ${codename}-security main restricted universe multiverse' >> /etc/apt/sources.list
             fi
           "
           ;;
@@ -694,16 +726,16 @@ optimize_distro_mirrors() {
             rm -f /etc/apt/sources.list.d/* 2>/dev/null || true
             rm -f /etc/apt/preferences.d/* 2>/dev/null || true
             mkdir -p /etc/apt/preferences.d
-            echo 'Package: *' > /etc/apt/preferences.d/99bookworm-force
-            echo 'Pin: release n=bookworm*' >> /etc/apt/preferences.d/99bookworm-force
-            echo 'Pin-Priority: 1001' >> /etc/apt/preferences.d/99bookworm-force
+            echo 'Package: *' > /etc/apt/preferences.d/99${codename}-force
+            echo 'Pin: release n=${codename}*' >> /etc/apt/preferences.d/99${codename}-force
+            echo 'Pin-Priority: 1001' >> /etc/apt/preferences.d/99${codename}-force
             mkdir -p /etc/apt/apt.conf.d
             echo 'APT::Get::AutomaticRemove \"0\";' > /etc/apt/apt.conf.d/99-disable-autoremove
             echo 'APT::Get::HideAutoRemove \"1\";' >> /etc/apt/apt.conf.d/99-disable-autoremove
-            echo 'deb http://deb.debian.org/debian/ bookworm main contrib non-free non-free-firmware' > /etc/apt/sources.list
-            echo 'deb http://deb.debian.org/debian/ bookworm-updates main contrib non-free non-free-firmware' >> /etc/apt/sources.list
-            echo 'deb http://deb.debian.org/debian-security/ bookworm-security main contrib non-free non-free-firmware' >> /etc/apt/sources.list
-            echo 'deb http://mirror.us.leaseweb.net/debian/ bookworm main contrib non-free non-free-firmware' >> /etc/apt/sources.list
+            echo 'deb http://deb.debian.org/debian/ ${codename} main contrib non-free non-free-firmware' > /etc/apt/sources.list
+            echo 'deb http://deb.debian.org/debian/ ${codename}-updates main contrib non-free non-free-firmware' >> /etc/apt/sources.list
+            echo 'deb http://deb.debian.org/debian-security/ ${codename}-security main contrib non-free non-free-firmware' >> /etc/apt/sources.list
+            echo 'deb http://mirror.us.leaseweb.net/debian/ ${codename} main contrib non-free non-free-firmware' >> /etc/apt/sources.list
           "
           ;;
       esac
@@ -947,15 +979,62 @@ stub_distro_tools() {
         chmod +x /usr/sbin/policy-rc.d
         touch /usr/sbin/policy-rc.d.created_by_groot
       fi
-      for cmd in updatedb updatedb.plocate systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl; do
-        for dir in /usr/bin /usr/sbin /bin /sbin; do
-          if [ -f "$dir/$cmd" ] && [ ! -f "$dir/$cmd.bak" ]; then
-            mv "$dir/$cmd" "$dir/$cmd.bak"
-            echo -e "#!/bin/sh\nexit 0" > "$dir/$cmd"
-            chmod +x "$dir/$cmd"
+      if command -v dpkg-divert >/dev/null; then
+        for path in /usr/bin/updatedb /usr/sbin/updatedb /usr/bin/updatedb.plocate /usr/sbin/updatedb.plocate /usr/bin/updatedb.mlocate /usr/sbin/updatedb.mlocate /bin/updatedb /sbin/updatedb; do
+          if [ -d "$(dirname "$path")" ]; then
+            dpkg-divert --local --rename --add "$path" &>/dev/null || true
+            echo -e "#!/bin/sh\nexit 0" > "$path"
+            chmod +x "$path"
           fi
         done
-      done
+        for cmd in systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl udevadm; do
+          for dir in /usr/bin /usr/sbin /bin /sbin; do
+            local path="$dir/$cmd"
+            if [ -d "$dir" ]; then
+              dpkg-divert --local --rename --divert "$path.distrib" --add "$path" &>/dev/null || true
+              echo -e "#!/bin/sh\nexit 0" > "$path"
+              chmod +x "$path"
+            fi
+          done
+        done
+        for cmd in systemd-tmpfiles systemd-sysusers; do
+          for dir in /usr/bin /usr/sbin /bin /sbin; do
+            local path="$dir/$cmd"
+            if [ -d "$dir" ]; then
+              dpkg-divert --local --rename --divert "$path.distrib" --add "$path" &>/dev/null || true
+              echo -e "#!/bin/sh\nif [ -x \"$path.distrib\" ]; then\n  \"$path.distrib\" \"\$@\" || true\nfi\nexit 0" > "$path"
+              chmod +x "$path"
+            fi
+          done
+        done
+        local pk_path="/etc/apt/apt.conf.d/20packagekit"
+        if [ -f "$pk_path" ]; then
+          dpkg-divert --local --rename --divert "$pk_path.distrib" --add "$pk_path" &>/dev/null || true
+        fi
+      else
+        for cmd in systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl udevadm; do
+          for dir in /usr/bin /usr/sbin /bin /sbin; do
+            if [ -f "$dir/$cmd" ] && [ ! -f "$dir/$cmd.bak" ]; then
+              mv "$dir/$cmd" "$dir/$cmd.bak"
+              echo -e "#!/bin/sh\nexit 0" > "$dir/$cmd"
+              chmod +x "$dir/$cmd"
+            fi
+          done
+        done
+        for cmd in systemd-tmpfiles systemd-sysusers; do
+          for dir in /usr/bin /usr/sbin /bin /sbin; do
+            if [ -f "$dir/$cmd" ] && [ ! -f "$dir/$cmd.bak" ]; then
+              mv "$dir/$cmd" "$dir/$cmd.bak"
+              echo -e "#!/bin/sh\nif [ -x \"$dir/$cmd.bak\" ]; then\n  \"$dir/$cmd.bak\" \"\$@\" || true\nfi\nexit 0" > "$dir/$cmd"
+              chmod +x "$dir/$cmd"
+            fi
+          done
+        done
+        local pk_path="/etc/apt/apt.conf.d/20packagekit"
+        if [ -f "$pk_path" ] && [ ! -f "$pk_path.bak" ]; then
+          mv "$pk_path" "$pk_path.bak"
+        fi
+      fi
       
       cat << "EOF" > /tmp/groot-run-with-dbus.sh
 #!/bin/sh
@@ -1007,13 +1086,34 @@ restore_distro_tools() {
       if [ -f /usr/sbin/policy-rc.d.created_by_groot ]; then
         rm -f /usr/sbin/policy-rc.d /usr/sbin/policy-rc.d.created_by_groot
       fi
-      for cmd in updatedb updatedb.plocate systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl; do
+      if command -v dpkg-divert >/dev/null; then
+        for path in /usr/bin/updatedb /usr/sbin/updatedb /usr/bin/updatedb.plocate /usr/sbin/updatedb.plocate /usr/bin/updatedb.mlocate /usr/sbin/updatedb.mlocate /bin/updatedb /sbin/updatedb; do
+          rm -f "$path"
+          dpkg-divert --local --rename --remove "$path" &>/dev/null || true
+        done
+        for cmd in systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl systemd-tmpfiles systemd-sysusers udevadm; do
+          for dir in /usr/bin /usr/sbin /bin /sbin; do
+            local path="$dir/$cmd"
+            if [ -d "$dir" ]; then
+              rm -f "$path"
+              dpkg-divert --local --rename --divert "$path.distrib" --remove "$path" &>/dev/null || true
+            fi
+          done
+        done
+        local pk_path="/etc/apt/apt.conf.d/20packagekit"
+        dpkg-divert --local --rename --divert "$pk_path.distrib" --remove "$pk_path" &>/dev/null || true
+      fi
+      for cmd in systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl systemd-tmpfiles systemd-sysusers udevadm; do
         for dir in /usr/bin /usr/sbin /bin /sbin; do
           if [ -f "$dir/$cmd.bak" ]; then
             mv "$dir/$cmd.bak" "$dir/$cmd"
           fi
         done
       done
+      local pk_path="/etc/apt/apt.conf.d/20packagekit"
+      if [ -f "$pk_path.bak" ]; then
+        mv "$pk_path.bak" "$pk_path"
+      fi
     ' &>/dev/null || true
   fi
 }
@@ -1875,6 +1975,7 @@ de_is_installed() {
 install_desktop_environment() {
   local distro="$1" de="$2" auto_yes="$3"
   ACTIVE_DISTRO="$distro"
+  cmd_stop "$distro"
 
   # Initialize desktop environment metadata for this specific distro
   init_de_metadata_for_distro "$distro"
@@ -1891,8 +1992,29 @@ install_desktop_environment() {
   local user_picked_pkg
   user_picked_pkg=$(config_get_distro_field "$distro" "custom_de_pkg")
   if [ -n "$user_picked_pkg" ]; then
+    local custom_de_type=""
+    local pkg_lower
+    pkg_lower=$(echo "$user_picked_pkg" | tr '[:upper:]' '[:lower:]')
+    case "$pkg_lower" in
+      *kde*|*plasma*)      custom_de_type="kde" ;;
+      *xfce*)              custom_de_type="xfce4" ;;
+      *gnome*)             custom_de_type="gnome" ;;
+      *lxqt*|*lubuntu*)   custom_de_type="lxqt" ;;
+      *mate*)              custom_de_type="mate" ;;
+      *budgie*)            custom_de_type="budgie" ;;
+      *cinnamon*)          custom_de_type="cinnamon" ;;
+      *openbox*)           custom_de_type="openbox" ;;
+    esac
+
+    if [ "$custom_de_type" != "$de" ]; then
+      config_set_distro_field "$distro" "custom_de_pkg" ""
+      user_picked_pkg=""
+    fi
+  fi
+
+  if [ -n "$user_picked_pkg" ]; then
     pkg="$user_picked_pkg"
-    print_success "Using selected package: ${pkg}"
+    print_success "Using selected custom package: ${pkg}"
   elif [ "$pm" = "apt" ] && { [ "$pkg" = "$generic_pkg" ] || [ "${custom_distro}" = "1" ]; }; then
     print_step "Probing available desktop packages for ${de} in ${distro}..."
     local probe_candidates=""
@@ -1938,7 +2060,7 @@ install_desktop_environment() {
   fi
 
   if [ "$auto_yes" != "y" ]; then
-    read -rp "$(echo -e "${YELLOW}${pkg} is not installed. Install it? [Y/n]: ${RESET}")" confirm
+    read -rp "$(echo -e "${YELLOW}${de} for ${distro} (${pkg}) is not installed. Install it? [Y/n]: ${RESET}")" confirm
     confirm="${confirm:-Y}"
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
       print_error "Cannot continue without a desktop environment."
@@ -1946,7 +2068,7 @@ install_desktop_environment() {
     fi
   fi
 
-  print_step "Installing ${pkg} inside ${distro}..."
+  print_step "Installing ${de} (${pkg}) inside ${distro}..."
   log "Installing DE: $de in distro: $distro"
 
   local start_log_lines=0
@@ -1963,6 +2085,9 @@ install_desktop_environment() {
   case "$pm" in
     apt)
       stub_distro_tools "$distro"
+      # Clear any stale locks and pre-configure package database to resolve any interrupted installations
+      run_with_spinner "Clearing package manager locks" proot-distro login "$distro" -- rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null
+      run_with_spinner "Pre-configuring package database" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confdef --force-confold || true
       # Force-clean cached package lists to ensure fresh, non-404 mirror updates on rolling-release distros
       run_with_spinner "Cleaning package index cache" proot-distro login "$distro" -- bash -c \
         "rm -rf /var/lib/apt/lists/* && env DEBIAN_FRONTEND=noninteractive apt-get clean"
@@ -2032,7 +2157,6 @@ install_desktop_environment() {
         run_with_spinner "Clearing package manager locks" proot-distro login "$distro" -- rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock 2>/dev/null
         run_with_spinner "Configuring dpkg database" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confdef --force-confold
         run_with_spinner "Fixing broken dependencies" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive apt-get install -f -y -o APT::Solver=internal -o APT::Get::AutomaticRemove=0 -o APT::Get::HideAutoRemove=1 --allow-downgrades
-        run_with_spinner "Upgrading base packages" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y --fix-broken -o APT::Solver=internal -o APT::Get::AutomaticRemove=0 -o APT::Get::HideAutoRemove=1 --allow-downgrades
         run_with_spinner "Updating packages (retry)" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get update -y -o Acquire::http::No-Cache=true -o Acquire::http::Max-Age=0 || true
         local retry_cmd="${install_cmd}"
         run_with_spinner "Retrying installation" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh bash -c "$retry_cmd"
@@ -2138,7 +2262,6 @@ install_desktop_environment() {
       
       if [ $status -ne 0 ] && [ "$pm" = "apt" ]; then
         run_with_spinner "Fixing broken dependencies" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive apt-get install -f -y -o APT::Solver=internal -o APT::Get::AutomaticRemove=0 -o APT::Get::HideAutoRemove=1 --allow-downgrades
-        run_with_spinner "Upgrading base packages" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y --fix-broken -o APT::Solver=internal -o APT::Get::AutomaticRemove=0 -o APT::Get::HideAutoRemove=1 --allow-downgrades
         run_with_spinner "Retrying fallback packages" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive apt-get install -y --fix-broken --fix-missing -o APT::Solver=internal --allow-downgrades $generic_pkg
         status=$?
       fi
@@ -2697,7 +2820,6 @@ launch_desktop() {
 
         run_with_spinner "Updating packages" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get update -y -o Acquire::http::Timeout="10" -o Acquire::http::No-Cache=true -o Acquire::http::Max-Age=0 || true
         run_with_spinner "Fixing broken dependencies" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get install -f -y -o APT::Solver=internal -o APT::Get::AutomaticRemove=0 -o APT::Get::HideAutoRemove=1 --allow-downgrades
-        run_with_spinner "Upgrading base packages" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y --fix-broken -o APT::Solver=internal -o APT::Get::AutomaticRemove=0 -o APT::Get::HideAutoRemove=1 --allow-downgrades
         
         if [ $dbus_missing -eq 1 ]; then
           local dbus_status=0
@@ -4089,6 +4211,25 @@ cmd_stop() {
           fi
         fi
 
+        # Check 4: check if cmdline contains the proot-distro installed-rootfs path
+        if [ \"\$is_guest\" -eq 0 ] && [ -f \"/proc/\$p/cmdline\" ]; then
+          local p_cmd
+          p_cmd=\$(cat \"/proc/\$p/cmdline\" 2>/dev/null | tr '\\0' ' ')
+          if [[ \"\$p_cmd\" == *\"/proot-distro/installed-rootfs/\"* ]]; then
+            is_guest=1
+          fi
+        fi
+
+        # Check 5: check if /proc/\$p/cwd or /proc/\$p/root points inside any proot-distro installed-rootfs
+        if [ \"\$is_guest\" -eq 0 ]; then
+          local p_cwd p_root
+          p_cwd=\$(readlink \"/proc/\$p/cwd\" 2>/dev/null)
+          p_root=\$(readlink \"/proc/\$p/root\" 2>/dev/null)
+          if [[ \"\$p_cwd\" == *\"/proot-distro/installed-rootfs/\"* ]] || [[ \"\$p_root\" == *\"/proot-distro/installed-rootfs/\"* ]]; then
+            is_guest=1
+          fi
+        fi
+
         if [ \"\$is_guest\" -eq 1 ]; then
           kill -9 \"\$p\" 2>/dev/null || true
         fi
@@ -4191,6 +4332,25 @@ cmd_stop() {
           fi
         fi
 
+        # Check 4: check if cmdline contains the target's rootfs path
+        if [ \"\$is_guest\" -eq 0 ] && [ -f \"/proc/\$p/cmdline\" ]; then
+          local p_cmd
+          p_cmd=\$(cat \"/proc/\$p/cmdline\" 2>/dev/null | tr '\\0' ' ')
+          if [[ \"\$p_cmd\" == *\"/proot-distro/installed-rootfs/${target}\"* ]]; then
+            is_guest=1
+          fi
+        fi
+
+        # Check 5: check if /proc/\$p/cwd or /proc/\$p/root points to the target's rootfs path
+        if [ \"\$is_guest\" -eq 0 ]; then
+          local p_cwd p_root
+          p_cwd=\$(readlink \"/proc/\$p/cwd\" 2>/dev/null)
+          p_root=\$(readlink \"/proc/\$p/root\" 2>/dev/null)
+          if [[ \"\$p_cwd\" == *\"/proot-distro/installed-rootfs/${target}\"* ]] || [[ \"\$p_root\" == *\"/proot-distro/installed-rootfs/${target}\"* ]]; then
+            is_guest=1
+          fi
+        fi
+
         if [ \"\$is_guest\" -eq 1 ]; then
           kill -9 \"\$p\" 2>/dev/null || true
         fi
@@ -4203,6 +4363,71 @@ cmd_stop() {
     "
     log "Session stopped for distro: $target"
   fi
+
+  # Resolve the rootfs paths for the targets and release stuck locks
+  local targets=""
+  if [ -z "$target" ]; then
+    targets=$(get_installed_distros)
+  else
+    targets="$target"
+  fi
+
+  for t in $targets; do
+    local rootfs_path=""
+    if [ -n "$PREFIX" ] && [ -d "$PREFIX/var/lib/proot-distro/installed-rootfs/$t" ]; then
+      rootfs_path="$PREFIX/var/lib/proot-distro/installed-rootfs/$t"
+    elif [ -d "$HOME/../usr/var/lib/proot-distro/installed-rootfs/$t" ]; then
+      rootfs_path="$HOME/../usr/var/lib/proot-distro/installed-rootfs/$t"
+    elif [ -d "/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/$t" ]; then
+      rootfs_path="/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/$t"
+    fi
+
+    if [ -n "$rootfs_path" ]; then
+      # Scan container and package manager lock files for any processes holding them on the host
+      for lock_file in "$rootfs_path.lock" "$rootfs_path/var/lib/dpkg/lock" "$rootfs_path/var/lib/dpkg/lock-frontend" "$rootfs_path/var/cache/apt/archives/lock" "$rootfs_path/var/lib/apt/lists/lock"; do
+        if [ -f "$lock_file" ]; then
+          local lock_pids=""
+          if command -v lsof &>/dev/null; then
+            lock_pids=$(lsof -t "$lock_file" 2>/dev/null || true)
+          fi
+          if [ -z "$lock_pids" ] && command -v fuser &>/dev/null; then
+            lock_pids=$(fuser "$lock_file" 2>/dev/null || true)
+          fi
+          # Inode-based lock query from /proc/locks (highly robust, no lsof/fuser dependencies)
+          local inode hex_inode
+          inode=$(ls -i "$lock_file" 2>/dev/null | awk '{print $1}' || true)
+          if [ -n "$inode" ]; then
+            hex_inode=$(printf '%x' "$inode" 2>/dev/null || true)
+            if [ -n "$hex_inode" ]; then
+              local proc_pids
+              proc_pids=$(awk -v target_inode="$hex_inode" '{split($6, parts, ":"); if (tolower(parts[3]) == target_inode) print $5}' /proc/locks 2>/dev/null || true)
+              if [ -n "$proc_pids" ]; then
+                lock_pids="$lock_pids $proc_pids"
+              fi
+            fi
+          fi
+          # Fallback: check if the lock file contains a valid ASCII PID directly
+          if [ -z "$lock_pids" ] && [ -s "$lock_file" ]; then
+            local file_content
+            file_content=$(tr -d '\r\n' < "$lock_file" 2>/dev/null || true)
+            if [[ "$file_content" =~ ^[0-9]+$ ]]; then
+              lock_pids="$file_content"
+            fi
+          fi
+          for pid in $lock_pids; do
+            if [ -n "$pid" ] && [ "$pid" -ne "$$" ] && [ "$pid" -ne "$BASHPID" ] && [ "$pid" -ne "$PPID" ] 2>/dev/null; then
+              log "Force-killing process $pid holding lock on $lock_file"
+              kill -9 "$pid" 2>/dev/null || true
+            fi
+          done
+          # Clean up the stale package manager lock files (excluding the container lock file)
+          if [ "$lock_file" != "$rootfs_path.lock" ]; then
+            rm -f "$lock_file"
+          fi
+        fi
+      done
+    fi
+  done
 }
 
 # -----------------------------------------------------------------------------
@@ -4848,8 +5073,7 @@ cmd_remove_desk() {
   restore_distro_tools "$distro"
 
   if [ $uninstall_status -ne 0 ]; then
-    print_error "Failed to uninstall desktop environment packages."
-    exit 1
+    print_warn "First-pass package removal completed with warnings (exit code $uninstall_status). Checking remnants..."
   fi
   
   # Verification: check if DE binary is gone, retry with full dpkg force-purge if not
@@ -4911,9 +5135,34 @@ cmd_remove_desk() {
       config_set_distro_field "$distro" "installed_pkg_${last_de}" ""
       uninstall_ok=1
     else
-      print_error "Failed to completely remove '${last_de}' after two passes. Manual cleanup may be required."
-      log "Double-pass removal failed for $last_de in $distro"
-      exit 1
+      echo ""
+      print_warn "Could not fully uninstall some desktop packages inside the distro due to a package manager lock or conflict."
+      echo -e "${WHITE}The remaining packages are very lightweight and will not affect the system.${RESET}"
+      echo -e "${WHITE}Marking '${last_de}' as uninstalled in groot-desk and clearing the shortcuts.${RESET}"
+      
+      local clean_cmd=""
+      case "$pm" in
+        apt)    clean_cmd="apt-get purge $purge_pkgs" ;;
+        apk)    clean_cmd="apk del $purge_pkgs" ;;
+        pacman) clean_cmd="pacman -Rns $purge_pkgs" ;;
+        dnf)    clean_cmd="dnf remove $purge_pkgs" ;;
+        xbps)   clean_cmd="xbps-remove -Rfy $purge_pkgs" ;;
+        emerge) clean_cmd="emerge --depclean $purge_pkgs" ;;
+      esac
+      
+      echo -e "${GRAY}To manually force remove package remnants inside the distro later, run:${RESET}"
+      echo -e "  ${CYAN}groot-desk login $distro${RESET}"
+      echo -e "  ${CYAN}$clean_cmd${RESET}"
+      echo ""
+      
+      local startcmd="${DE_STARTCMD[$last_de]}"
+      if [ -n "$startcmd" ]; then
+        proot-distro login "$distro" -- rm -f "/usr/bin/$startcmd" "/usr/local/bin/$startcmd" "/bin/$startcmd" "/usr/sbin/$startcmd" 2>/dev/null || true
+      fi
+      
+      config_set_distro_field "$distro" "last_de" ""
+      config_set_distro_field "$distro" "installed_pkg_${last_de}" ""
+      uninstall_ok=1
     fi
   fi
 
@@ -4927,12 +5176,12 @@ cmd_remove_desk() {
         xbps)   xbps-remove -Oy &>/dev/null || true ;;
       esac
       case '$last_de' in
-        xfce4)    rm -f /usr/share/xsessions/xfce.desktop 2>/dev/null || true ;;
-        lxqt)     rm -f /usr/share/xsessions/lxqt.desktop 2>/dev/null || true ;;
-        mate)     rm -f /usr/share/xsessions/mate.desktop 2>/dev/null || true ;;
-        kde)      rm -f /usr/share/xsessions/plasma.desktop 2>/dev/null || true ;;
+        xfce4)    rm -f /usr/share/xsessions/*xfce*.desktop /usr/share/xsessions/*xubuntu*.desktop 2>/dev/null || true ;;
+        lxqt)     rm -f /usr/share/xsessions/*lxqt*.desktop /usr/share/xsessions/*lubuntu*.desktop 2>/dev/null || true ;;
+        mate)     rm -f /usr/share/xsessions/*mate*.desktop 2>/dev/null || true ;;
+        kde)      rm -f /usr/share/xsessions/*plasma*.desktop /usr/share/xsessions/*kde*.desktop 2>/dev/null || true ;;
         gnome)    
-          rm -f /usr/share/xsessions/gnome.desktop /usr/share/xsessions/gnome-flashback-*.desktop 2>/dev/null || true
+          rm -f /usr/share/xsessions/*gnome*.desktop /usr/share/xsessions/*ubuntu*.desktop 2>/dev/null || true
           rm -f /etc/skel/.config/autostart/plank.desktop /root/.config/autostart/plank.desktop 2>/dev/null || true
           if [ -d /home ]; then
             for u in /home/*; do
@@ -4940,9 +5189,9 @@ cmd_remove_desk() {
             done
           fi
           ;;
-        budgie)   rm -f /usr/share/xsessions/budgie-desktop.desktop 2>/dev/null || true ;;
-        cinnamon) rm -f /usr/share/xsessions/cinnamon*.desktop 2>/dev/null || true ;;
-        openbox)  rm -f /usr/share/xsessions/openbox.desktop 2>/dev/null || true ;;
+        budgie)   rm -f /usr/share/xsessions/*budgie*.desktop 2>/dev/null || true ;;
+        cinnamon) rm -f /usr/share/xsessions/*cinnamon*.desktop 2>/dev/null || true ;;
+        openbox)  rm -f /usr/share/xsessions/*openbox*.desktop 2>/dev/null || true ;;
       esac
       rm -rf /root/.cache 2>/dev/null || true
       if [ -d /home ]; then
