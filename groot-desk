@@ -4,7 +4,7 @@
 # groot-desk - Linux desktop manager for Termux
 # =============================================================================
 
-VERSION="1.0.1"
+VERSION="0.0.1"
 CONFIG_DIR="$HOME/.config/groot-desk"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 LOG_FILE="$CONFIG_DIR/groot-desk.log"
@@ -224,6 +224,37 @@ print_info()    { echo -e "${BLUE}[info]${RESET} $1"; log "INFO: $1"; }
 print_step()    { echo -e "${WHITE}[....] $1${RESET}"; }
 print_gray()    { echo -e "${GRAY}$1${RESET}"; }
 
+check_internet_connection() {
+  local test_urls=("https://1.1.1.1" "https://8.8.8.8" "https://archlinux.org" "https://deb.debian.org")
+  local url
+  for url in "${test_urls[@]}"; do
+    if curl -sS --connect-timeout 5 --max-time 8 -o /dev/null "$url" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+wait_for_internet() {
+  local max_attempts="${1:-5}"
+  local attempt=1
+  local delay=3
+  if check_internet_connection; then return 0; fi
+  print_warn "No internet connection detected."
+  while [ $attempt -le $max_attempts ]; do
+    print_step "Checking internet connection (attempt ${attempt}/${max_attempts})..."
+    if check_internet_connection; then
+      print_success "Internet connection restored."
+      return 0
+    fi
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+    [ $delay -gt 20 ] && delay=20
+  done
+  return 1
+}
+
 cleanup() {
   # Re-enable line wrapping in case it was disabled
   printf "\033[?7h" 2>/dev/null
@@ -429,6 +460,10 @@ config_init() {
   # Ensure jq is installed
   if ! command -v jq &>/dev/null; then
     print_warn "jq is required for configuration management but is not installed."
+    if ! wait_for_internet 5; then
+      print_error "No internet connection, and jq is required but not installed. Please connect and try again."
+      exit 1
+    fi
     print_step "Installing jq..."
     if pkg install jq -y >> "$LOG_FILE" 2>&1; then
       print_success "jq installed successfully."
@@ -499,6 +534,10 @@ start_termux_x11_server() {
   if [ "$d_num" -ne 1 ] || ! command -v termux-x11 &>/dev/null; then
     # Run in virtual frame buffer (Xvfb) mode - zero phone APK dependencies
     if ! command -v Xvfb &>/dev/null; then
+      if ! wait_for_internet 5; then
+        print_error "No internet connection, and Xvfb is required but not installed. Please connect and try again."
+        return 1
+      fi
       run_with_spinner "Installing Xvfb virtual frame buffer" bash -c "pkg install x11-repo -y && apt-get update -y && pkg install xorg-server-xvfb -y"
     fi
     local custom_res
@@ -782,6 +821,10 @@ optimize_distro_mirrors() {
 check_proot_distro() {
   if ! command -v proot-distro &>/dev/null; then
     print_warn "proot-distro is not installed."
+    if ! wait_for_internet 5; then
+      print_error "No internet connection, and proot-distro is required but not installed. Please connect and try again."
+      exit 1
+    fi
     run_with_spinner "Installing proot-distro" pkg install proot-distro -y
     if [ $? -ne 0 ]; then
       print_error "Failed to install proot-distro. Run: pkg install proot-distro"
@@ -797,6 +840,10 @@ check_proot_distro() {
     confirm="${confirm:-Y}"
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
       print_error "Cannot continue without proot-distro v5. Run: pkg upgrade proot-distro"
+      exit 1
+    fi
+    if ! wait_for_internet 5; then
+      print_error "No internet connection. Cannot upgrade proot-distro. Please connect and try again."
       exit 1
     fi
     run_with_spinner "Upgrading proot-distro" pkg install proot-distro -y
@@ -825,7 +872,7 @@ check_termux_x11() {
 # Desktop environment definitions
 # -----------------------------------------------------------------------------
 declare -A DE_PACKAGE DE_STARTCMD DE_SIZE DE_DESC DE_TAG DE_GENERIC_PACKAGE
-DE_LIST=(xfce4 lxqt mate kde gnome budgie cinnamon openbox)
+DE_LIST=(xfce4 lxqt mate kde gnome budgie cinnamon openbox pearos-beta)
 
 get_distro_pkg_manager() {
   local distro="$1"
@@ -989,7 +1036,7 @@ stub_distro_tools() {
         done
         for cmd in systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl udevadm; do
           for dir in /usr/bin /usr/sbin /bin /sbin; do
-            local path="$dir/$cmd"
+            path="$dir/$cmd"
             if [ -d "$dir" ]; then
               dpkg-divert --local --rename --divert "$path.distrib" --add "$path" &>/dev/null || true
               echo -e "#!/bin/sh\nexit 0" > "$path"
@@ -999,7 +1046,7 @@ stub_distro_tools() {
         done
         for cmd in systemd-tmpfiles systemd-sysusers; do
           for dir in /usr/bin /usr/sbin /bin /sbin; do
-            local path="$dir/$cmd"
+            path="$dir/$cmd"
             if [ -d "$dir" ]; then
               dpkg-divert --local --rename --divert "$path.distrib" --add "$path" &>/dev/null || true
               echo -e "#!/bin/sh\nif [ -x \"$path.distrib\" ]; then\n  \"$path.distrib\" \"\$@\" || true\nfi\nexit 0" > "$path"
@@ -1007,9 +1054,15 @@ stub_distro_tools() {
             fi
           done
         done
-        local pk_path="/etc/apt/apt.conf.d/20packagekit"
+        pk_path="/etc/apt/apt.conf.d/20packagekit"
         if [ -f "$pk_path" ]; then
           dpkg-divert --local --rename --divert "$pk_path.distrib" --add "$pk_path" &>/dev/null || true
+        fi
+        # Disable snapd dependencies on Ubuntu to prevent package configuration hangs
+        if [ "$distro" = "ubuntu" ]; then
+          mkdir -p /etc/apt/preferences.d
+          echo -e "Package: snapd\nPin: release *\nPin-Priority: -10" > /etc/apt/preferences.d/nosnap
+          apt-get purge -y snapd &>/dev/null || true
         fi
       else
         for cmd in systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl udevadm; do
@@ -1030,7 +1083,7 @@ stub_distro_tools() {
             fi
           done
         done
-        local pk_path="/etc/apt/apt.conf.d/20packagekit"
+        pk_path="/etc/apt/apt.conf.d/20packagekit"
         if [ -f "$pk_path" ] && [ ! -f "$pk_path.bak" ]; then
           mv "$pk_path" "$pk_path.bak"
         fi
@@ -1093,14 +1146,14 @@ restore_distro_tools() {
         done
         for cmd in systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl systemd-tmpfiles systemd-sysusers udevadm; do
           for dir in /usr/bin /usr/sbin /bin /sbin; do
-            local path="$dir/$cmd"
+            path="$dir/$cmd"
             if [ -d "$dir" ]; then
               rm -f "$path"
               dpkg-divert --local --rename --divert "$path.distrib" --remove "$path" &>/dev/null || true
             fi
           done
         done
-        local pk_path="/etc/apt/apt.conf.d/20packagekit"
+        pk_path="/etc/apt/apt.conf.d/20packagekit"
         dpkg-divert --local --rename --divert "$pk_path.distrib" --remove "$pk_path" &>/dev/null || true
       fi
       for cmd in systemctl invoke-rc.d update-rc.d service deb-systemd-invoke deb-systemd-helper initctl systemd-tmpfiles systemd-sysusers udevadm; do
@@ -1110,7 +1163,7 @@ restore_distro_tools() {
           fi
         done
       done
-      local pk_path="/etc/apt/apt.conf.d/20packagekit"
+      pk_path="/etc/apt/apt.conf.d/20packagekit"
       if [ -f "$pk_path.bak" ]; then
         mv "$pk_path.bak" "$pk_path"
       fi
@@ -1175,6 +1228,12 @@ init_de_metadata_for_distro() {
   DE_STARTCMD[openbox]="openbox-session"
   DE_SIZE[openbox]="~50 MB"
   DE_DESC[openbox]="Bare minimum window manager. No panels or menus by default. For advanced users."
+
+  DE_PACKAGE[pearos-beta]="plasma-desktop kvantum kvantum-qt5 base-devel git"
+  DE_STARTCMD[pearos-beta]="startplasma-x11"
+  DE_SIZE[pearos-beta]="~1.5 GB"
+  DE_DESC[pearos-beta]="1:1 macOS-like Arch layout using official Pear-Project assets. Arch/pacman only."
+  DE_TAG[pearos-beta]="Beta"
   [ -z "$distro" ] && return 0
   pm=$(get_distro_pkg_manager "$distro")
 
@@ -1339,13 +1398,11 @@ init_de_metadata_for_distro() {
       DE_SIZE[kde]="~1.2 GB"
       DE_DESC[kde]="Arch KDE Plasma desktop. Modern and highly customizable."
 
-      DE_PACKAGE[gnome]="gnome-flashback"
-      DE_SIZE[gnome]="~800 MB"
-      DE_DESC[gnome]="Arch GNOME desktop environment. Classic and lightweight."
+      DE_PACKAGE[gnome]="gnome-shell gnome-control-center gnome-session gnome-terminal nautilus gnome-backgrounds gnome-themes-extra gnome-keyring gvfs xdg-user-dirs-gtk network-manager-applet"
+      DE_SIZE[gnome]="~1.1 GB"
+      DE_DESC[gnome]="Arch GNOME desktop environment. Polished full-featured group layout."
 
-      DE_PACKAGE[gnome-flashback]="gnome-flashback"
-      DE_SIZE[gnome-flashback]="~800 MB"
-      DE_DESC[gnome-flashback]="Arch Classic GNOME Flashback session."
+      DE_PACKAGE[gnome-flashback]="gnome-shell gnome-control-center gnome-session gnome-terminal nautilus gnome-backgrounds gnome-themes-extra gnome-keyring gvfs xdg-user-dirs-gtk network-manager-applet"
 
       DE_PACKAGE[budgie]="budgie-desktop"
       DE_SIZE[budgie]="~600 MB"
@@ -1889,7 +1946,17 @@ select_desktop_environment() {
   echo "" >/dev/tty
 
   local i=1
+  local pm=""
+  [ -n "$distro" ] && pm=$(get_distro_pkg_manager "$distro")
+  declare -A menu_mapping
+
   for de in "${DE_LIST[@]}"; do
+    # pearos-beta is an Arch/pacman-only skin (native plasma-desktop packages +
+    # QML plasmoids/themes - no x86 emulation), so hide it anywhere else.
+    if [ "$de" = "pearos-beta" ] && [ "$pm" != "pacman" ]; then
+      continue
+    fi
+
     local tag=""
     if [ -n "$distro" ] && de_is_installed "$distro" "$de"; then
       tag="  ${GREEN}(installed)${RESET}"
@@ -1899,6 +1966,7 @@ select_desktop_environment() {
     echo -e "  ${BOLD}[$i]${RESET} ${WHITE}${de}${RESET}${tag}" >/dev/tty
     echo -e "      ${GRAY}${DE_SIZE[$de]}  ${DE_DESC[$de]}${RESET}" >/dev/tty
     echo "" >/dev/tty
+    menu_mapping[$i]="$de"
     ((i++))
   done
 
@@ -1909,13 +1977,12 @@ select_desktop_environment() {
 
   # Find the recommended option to use as default, fallback to 1
   local default_choice=1
-  local idx=1
-  for de in "${DE_LIST[@]}"; do
-    if [ "${DE_TAG[$de]}" = "Recommended" ]; then
+  local idx
+  for idx in "${!menu_mapping[@]}"; do
+    if [ "${DE_TAG[${menu_mapping[$idx]}]}" = "Recommended" ]; then
       default_choice=$idx
       break
     fi
-    ((idx++))
   done
 
   local choice=""
@@ -1936,7 +2003,7 @@ select_desktop_environment() {
           return
         fi
       else
-        SELECTED_DE="${DE_LIST[$((choice - 1))]}"
+        SELECTED_DE="${menu_mapping[$choice]}"
         return
       fi
     fi
@@ -2080,11 +2147,30 @@ install_desktop_environment() {
   pm=$(get_distro_pkg_manager "$distro")
   local install_cmd=""
 
+  if ! wait_for_internet 5; then
+    print_error "No internet connection. Please check your Wi-Fi or mobile data and try again."
+    restore_distro_tools "$distro"
+    exit 1
+  fi
+
   run_with_spinner "Optimizing repository mirrors" optimize_distro_mirrors "$distro" "$pm"
 
   case "$pm" in
     apt)
       stub_distro_tools "$distro"
+      # Block icon cache hangs during the setup process
+      proot-distro login "$distro" -- bash -c "
+        if [ -f /usr/sbin/update-icon-caches ] && [ ! -f /usr/sbin/update-icon-caches.bak ]; then
+          mv /usr/sbin/update-icon-caches /usr/sbin/update-icon-caches.bak
+          echo -e '#!/bin/sh\nexit 0' > /usr/sbin/update-icon-caches
+          chmod +x /usr/sbin/update-icon-caches
+        fi
+        if [ -f /usr/bin/gtk-update-icon-cache ] && [ ! -f /usr/bin/gtk-update-icon-cache.bak ]; then
+          mv /usr/bin/gtk-update-icon-cache /usr/bin/gtk-update-icon-cache.bak
+          echo -e '#!/bin/sh\nexit 0' > /usr/bin/gtk-update-icon-cache
+          chmod +x /usr/bin/gtk-update-icon-cache
+        fi
+      " &>/dev/null || true
       # Clear any stale locks and pre-configure package database to resolve any interrupted installations
       run_with_spinner "Clearing package manager locks" proot-distro login "$distro" -- rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null
       run_with_spinner "Pre-configuring package database" proot-distro login "$distro" -- /tmp/groot-run-with-dbus.sh env DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confdef --force-confold || true
@@ -2105,6 +2191,7 @@ install_desktop_environment() {
       install_cmd="apk add --no-cache $pkg"
       ;;
     pacman)
+      run_with_spinner "Clearing package manager locks" proot-distro login "$distro" -- rm -f /var/lib/pacman/db.lck 2>/dev/null
       run_with_spinner "Updating package lists inside ${distro}" proot-distro login "$distro" -- pacman -Sy --noconfirm
       if [ $? -ne 0 ]; then
         print_error "Failed to update packages inside ${distro}."
@@ -2113,6 +2200,7 @@ install_desktop_environment() {
       install_cmd="pacman -Syu --noconfirm --needed --overwrite '*' $pkg"
       ;;
     dnf)
+      run_with_spinner "Clearing package manager locks" proot-distro login "$distro" -- rm -f /var/lib/rpm/.rpm.lock 2>/dev/null
       run_with_spinner "Cleaning package cache" proot-distro login "$distro" -- dnf clean all
       run_with_spinner "Updating package lists inside ${distro}" proot-distro login "$distro" -- dnf makecache
       if [ $? -ne 0 ]; then
@@ -2148,9 +2236,20 @@ install_desktop_environment() {
 
   local repair_attempted=0
   local generic_fallback_attempted=0
+  local pearos_assets_installed=0
 
   if [ $status -ne 0 ]; then
-    print_warn "Initial installation command failed with exit status $status. Running package database repair..."
+    if ! check_internet_connection; then
+      print_warn "Initial installation command failed with exit status $status."
+      if ! wait_for_internet 5; then
+        print_error "Lost internet connection during installation and it did not come back."
+        print_error "This was a connectivity issue, not a broken mirror or package."
+        restore_distro_tools "$distro"
+        exit 1
+      fi
+    else
+      print_warn "Initial installation command failed with exit status $status. Running package database repair..."
+    fi
     repair_attempted=1
     case "$pm" in
       apt)
@@ -2201,7 +2300,7 @@ install_desktop_environment() {
       pacman)
         run_with_spinner "Purging broken package state" proot-distro login "$distro" -- bash -c \
           "to_purge=''; for p in $purge_pkgs; do if pacman -Q \"\$p\" &>/dev/null; then to_purge=\"\$to_purge \$p\"; fi; done; if [ -n \"\$to_purge\" ]; then pacman -Rns --noconfirm \$to_purge; fi"
-        run_with_spinner "Re-installing desktop packages" proot-distro login "$distro" -- pacman -Syu --noconfirm --needed --overwrite '*' "$pkg"
+        run_with_spinner "Re-installing desktop packages" proot-distro login "$distro" -- pacman -Syu --noconfirm --needed --overwrite '*' $pkg
         status=$?
         ;;
       dnf)
@@ -2225,8 +2324,21 @@ install_desktop_environment() {
     needs_fallback=1
   fi
 
-  if [ $needs_fallback -eq 1 ] && [ -n "$generic_pkg" ] && [ "$pkg" != "$generic_pkg" ]; then
-    print_warn "Distro-specific package ($pkg) did not produce desktop binaries. Attempting to install generic package ($generic_pkg) as fallback..."
+  if [ $needs_fallback -eq 1 ] && [ -n "$generic_pkg" ] && [ "$pkg" != "$generic_pkg" ];
+  then
+    if [ "$auto_yes" != "y" ]; then
+      echo ""
+      print_error "The requested package ($pkg) failed to install or did not produce working desktop binaries."
+      print_warn "You searched for a custom/specific version."
+      read -rp "$(echo -e "${YELLOW}Would you like to proceed with the default generic fallback package ($generic_pkg)? [Y/n]: ${RESET}")" confirm_fb
+      confirm_fb="${confirm_fb:-Y}"
+      if [[ ! "$confirm_fb" =~ ^[Yy]$ ]]; then
+        print_error "User aborted installation. Keeping system intact."
+        restore_distro_tools "$distro"
+        exit 1
+      fi
+    fi
+    print_warn "Attempting to install generic package ($generic_pkg) as fallback..."
     log "Generic fallback triggered for $de in $distro: $generic_pkg"
     generic_fallback_attempted=1
 
@@ -2269,7 +2381,85 @@ install_desktop_environment() {
   fi
 
   if [ $status -eq 0 ] && de_is_installed "$distro" "$de"; then
-    if [ $generic_fallback_attempted -eq 1 ]; then
+    # Fetch the official pearOS UI assets (icons, wallpapers, Kvantum theme,
+    # controlcentre/launchpad plasmoids). Everything is placed under
+    # /etc/skel rather than $HOME (which is /root at this point in the
+    # install) so the existing "Initializing user themes" skel-sync step in
+    # launch_desktop copies it into whichever account actually runs the
+    # session, including a non-root user created later.
+    if [ "$de" = "pearos-beta" ]; then
+      if ! wait_for_internet 5; then
+        echo ""
+        print_error "No internet connection: the pearOS UI assets (icons, wallpapers, theme, launcher) cannot be downloaded."
+        print_warn "Without them this is just plain Arch KDE Plasma, not pearOS."
+        if [ "$auto_yes" != "y" ]; then
+          read -rp "$(echo -e "${YELLOW}Continue anyway as plain KDE Plasma? [y/N]: ${RESET}")" confirm_plain
+          if [[ ! "$confirm_plain" =~ ^[Yy]$ ]]; then
+            print_error "Cancelled. Reconnect to the internet and run the install again to get the actual pearOS look."
+            restore_distro_tools "$distro"
+            exit 1
+          fi
+        fi
+        print_warn "Continuing without pearOS UI assets (plain KDE Plasma)."
+      else
+      print_step "Downloading official pearOS user interface assets..."
+      proot-distro login "$distro" -- bash -c "
+        set -e
+        WORKDIR=\$(mktemp -d)
+        cd \"\$WORKDIR\"
+        export HOME=/etc/skel
+        MANIFEST_DIR=/etc/skel/.groot-desk-pearos-manifest
+        mkdir -p \"\$MANIFEST_DIR\"
+
+        # Icons and wallpapers are plain assets - safe to copy directly.
+        # Diff before/after each copy so remove-desk knows exactly which
+        # entries it added, instead of guessing from name patterns later.
+        git clone --depth=1 https://github.com/Pear-Project/pearOS-Default-Icons.git icons
+        mkdir -p /etc/skel/.local/share/icons
+        before_icons=\$(ls /etc/skel/.local/share/icons/ 2>/dev/null)
+        cp -r icons/pearOS* /etc/skel/.local/share/icons/ 2>/dev/null || cp -r icons/* /etc/skel/.local/share/icons/
+        comm -13 <(echo \"\$before_icons\" | sort -u) <(ls /etc/skel/.local/share/icons/ 2>/dev/null | sort -u) > \"\$MANIFEST_DIR/icons\"
+
+        git clone --depth=1 https://github.com/Pear-Project/pearOS-Default-Wallpapers.git wallpapers
+        mkdir -p /etc/skel/.local/share/wallpapers
+        before_wp=\$(ls /etc/skel/.local/share/wallpapers/ 2>/dev/null)
+        find wallpapers -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.png' \) -exec cp {} /etc/skel/.local/share/wallpapers/ \;
+        comm -13 <(echo \"\$before_wp\" | sort -u) <(ls /etc/skel/.local/share/wallpapers/ 2>/dev/null | sort -u) > \"\$MANIFEST_DIR/wallpapers\"
+
+        # Kvantum theme is also a plain config asset
+        git clone --depth=1 https://github.com/Pear-Project/pearOS-Default-Kvantum.git kvantum
+        mkdir -p /etc/skel/.config/Kvantum
+        before_kv=\$(ls /etc/skel/.config/Kvantum/ 2>/dev/null)
+        cp -r kvantum/* /etc/skel/.config/Kvantum/
+        comm -13 <(echo \"\$before_kv\" | sort -u) <(ls /etc/skel/.config/Kvantum/ 2>/dev/null | sort -u) > \"\$MANIFEST_DIR/kvantum\"
+
+        # Plasmoids are QML packages, not static folders - they must be
+        # registered with kpackagetool6 so Plasma picks up their declared
+        # package ID correctly; a raw copy under a renamed folder can silently
+        # fail to load. Diff the applet list before/after so we capture the
+        # exact package ID kpackagetool6 assigned, for a clean --remove later.
+        git clone --depth=1 https://github.com/Pear-Project/kde_controlcentre.git controlcentre
+        before_applets=\$(kpackagetool6 --type Plasma/Applet --list 2>/dev/null | awk '{print \$1}')
+        (cd controlcentre && kpackagetool6 --type Plasma/Applet --install .) || true
+        comm -13 <(echo \"\$before_applets\" | sort -u) <(kpackagetool6 --type Plasma/Applet --list 2>/dev/null | awk '{print \$1}' | sort -u) > \"\$MANIFEST_DIR/plasmoid-id\"
+
+        # Keep the launchpad source around so remove-desk can invoke the same
+        # Makefile again later (e.g. 'make uninstall') without needing network
+        # access or hoping the upstream repo hasn't changed in the meantime.
+        git clone --depth=1 https://github.com/Pear-Project/pearOS-Default-Launchpad.git launchpad
+        rm -rf \"\$MANIFEST_DIR/launchpad-src\"
+        cp -r launchpad \"\$MANIFEST_DIR/launchpad-src\" 2>/dev/null || true
+        (cd launchpad && make install) || true
+
+        cd / && rm -rf \"\$WORKDIR\"
+      " >> "$LOG_FILE" 2>&1 && pearos_assets_installed=1 || print_warn "Some pearOS user interface assets failed to download/install. Check ${LOG_FILE}, or retry manually with: proot-distro login ${distro}"
+      fi
+    fi
+
+    if [ "$de" = "pearos-beta" ] && [ "$pearos_assets_installed" -ne 1 ]; then
+      print_warn "Arch Plasma installed successfully, but WITHOUT the pearOS theme (no internet during install)."
+      print_warn "This is plain KDE Plasma right now, not pearOS. Re-run the install with an internet connection to get the pearOS look."
+    elif [ $generic_fallback_attempted -eq 1 ]; then
       print_success "${de} installed successfully using generic fallback packages."
     elif [ $repair_attempted -eq 1 ]; then
       print_success "${de} installed successfully after database repair."
@@ -2295,6 +2485,11 @@ install_desktop_environment() {
     echo "    - Fallback Attempted:  $( [ $generic_fallback_attempted -eq 1 ] && echo 'Yes' || echo 'No' )"
     echo "    - Last Command Status: $status"
     echo "    - Binaries Installed:  $( de_is_installed "$distro" "$de" && echo 'Yes' || echo 'No' )"
+    local internet_ok=1
+    if ! check_internet_connection; then
+      internet_ok=0
+    fi
+    echo "    - Internet Reachable:  $( [ $internet_ok -eq 1 ] && echo 'Yes' || echo 'No' )"
     echo ""
     print_error "Recent installation logs from $LOG_FILE:"
     if [ -f "$LOG_FILE" ]; then
@@ -2308,9 +2503,16 @@ install_desktop_environment() {
       fi
     fi
     echo ""
-    print_warn "Try running the update/installation commands manually inside the container to see the issue:"
-    echo "    proot-distro login $distro"
-    echo "    (then run package manager update and install commands)"
+    if [ $internet_ok -eq 0 ]; then
+      print_error "This looks like a connectivity problem, not a broken mirror or package:"
+      print_error "your device could not reach the internet during the install."
+      print_warn "Check your Wi-Fi / mobile data and try again."
+    else
+      print_warn "Internet connectivity is fine, so this is a mirror or package issue."
+      print_warn "Try running the update/installation commands manually inside the container to see the issue:"
+      echo "    proot-distro login $distro"
+      echo "    (then run package manager update and install commands)"
+    fi
     echo ""
     restore_distro_tools "$distro"
     exit 1
@@ -2389,6 +2591,13 @@ select_user() {
     password="${password:-desktop_pass}"
     echo "" >/dev/tty
 
+    # Verify presence of sudo dependency frameworks inside alternative package environments
+    local pm
+    pm=$(get_distro_pkg_manager "$distro")
+    case "$pm" in
+      pacman) proot-distro login "$distro" -- pacman -S --noconfirm --needed sudo &>/dev/null ;;
+      apk)    proot-distro login "$distro" -- apk add --no-cache sudo &>/dev/null ;;
+    esac
     run_with_spinner "Creating user ${username}" proot-distro login "$distro" -- bash -c "
       id '$username' &>/dev/null || useradd -m -s /bin/bash -G wheel,sudo '$username' 2>/dev/null || useradd -m -s /bin/bash '$username'
       echo '$username:$password' | chpasswd
@@ -2436,6 +2645,10 @@ probe_gpu() {
 
 ensure_host_virglrenderer() {
   if ! command -v virgl_test_server &>/dev/null && ! command -v virgl_test_server_android &>/dev/null; then
+    if ! wait_for_internet 5; then
+      print_warn "No internet connection. Skipping virglrenderer-android install; hardware acceleration fallback unavailable."
+      return
+    fi
     print_step "Installing virglrenderer-android on host for hardware acceleration fallback..."
     run_with_spinner "Installing virglrenderer-android" pkg install virglrenderer-android -y
   fi
@@ -2450,7 +2663,12 @@ install_vulkan_drivers_in_container() {
   if proot-distro login "$distro" -- sh -c "ldconfig -p | grep -i vulkan || [ -f /usr/lib/libvulkan.so ] || [ -f /usr/lib/aarch64-linux-gnu/libvulkan.so ]" &>/dev/null; then
     return
   fi
-  
+
+  if ! wait_for_internet 5; then
+    print_warn "No internet connection. Skipping Vulkan driver install; hardware acceleration may fall back to software rendering."
+    return
+  fi
+
   print_step "Installing Vulkan/Turnip drivers inside ${distro} for hardware acceleration..."
   
   case "$pm" in
@@ -2475,7 +2693,7 @@ install_vulkan_drivers_in_container() {
 
 install_session_management_workarounds() {
   local distro="$1" de="$2"
-  if [ "$de" != "gnome" ] && [ "$de" != "kde" ]; then
+  if [ "$de" != "gnome" ] && [ "$de" != "kde" ] && [ "$de" != "pearos-beta" ]; then
     return
   fi
 
@@ -2486,6 +2704,9 @@ install_session_management_workarounds() {
 
   # Install dbus if missing
   if ! proot-distro login "$distro" -- sh -c "command -v dbus-launch || [ -f /usr/bin/dbus-launch ]" &>/dev/null; then
+    if ! wait_for_internet 5; then
+      print_warn "No internet connection. Skipping dbus install; session may be unstable without it."
+    else
     case "$pm" in
       apt)
         proot-distro login "$distro" -- rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock 2>/dev/null
@@ -2504,10 +2725,14 @@ install_session_management_workarounds() {
         run_with_spinner "Installing dbus" proot-distro login "$distro" -- xbps-install -y dbus
         ;;
     esac
+    fi
   fi
 
   # Install elogind as logind replacement (critical for GNOME/KDE "matching session" error)
   if ! proot-distro login "$distro" -- sh -c "command -v elogind || [ -f /usr/lib/elogind/elogind ] || [ -f /usr/libexec/elogind ]" &>/dev/null; then
+    if ! wait_for_internet 5; then
+      print_warn "No internet connection. Skipping elogind install; using fake session env vars instead."
+    else
     case "$pm" in
       apt)
         proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get install -y elogind libpam-elogind >> "$LOG_FILE" 2>&1 || print_warn "elogind not available (systemd distro) - using fake session env vars instead."
@@ -2525,6 +2750,7 @@ install_session_management_workarounds() {
         run_with_spinner "Installing elogind" proot-distro login "$distro" -- xbps-install -y elogind || true
         ;;
     esac
+    fi
   fi
 
   # Pre-create XDG_RUNTIME_DIR for root and any configured user
@@ -2540,13 +2766,17 @@ install_session_management_workarounds() {
   # Remove login1 D-Bus service files so libsystemd/mutter cannot query
   # org.freedesktop.login1 and instead falls back gracefully (proven fix)
   run_with_spinner "Removing login1 D-Bus interface files" proot-distro login "$distro" -- bash -c "
-    find /usr -type f -iname '*login1*' -delete 2>/dev/null || true
+    find /usr -type f -iname '*login1*' -exec rm -rf {} + 2>/dev/null || true
+    find /usr -type d -iname '*login1*' -exec rm -rf {} + 2>/dev/null || true
   " || true
 
-  # Compile mock systemd/logind stub library for GNOME/KDE (compiled with -nostdlib -lgcc)
-  if [ "$de" = "gnome" ] || [ "$de" = "kde" ]; then
+  # Compile mock systemd/logind stub library for GNOME/KDE/pearOS-beta (compiled with -nostdlib -lgcc)
+  if [ "$de" = "gnome" ] || [ "$de" = "kde" ] || [ "$de" = "pearos-beta" ]; then
     # Check if a compiler is available, if not, install gcc
     if ! proot-distro login "$distro" -- sh -c "command -v gcc || command -v clang || command -v cc" &>/dev/null; then
+      if ! wait_for_internet 5; then
+        print_warn "No internet connection. Skipping compiler install; the systemd/logind stub cannot be built."
+      else
       case "$pm" in
         apt)
           proot-distro login "$distro" -- rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock 2>/dev/null
@@ -2565,6 +2795,7 @@ install_session_management_workarounds() {
           run_with_spinner "Installing gcc for session helper" proot-distro login "$distro" -- xbps-install -y gcc || true
           ;;
       esac
+      fi
     fi
 
     # Detect the compiler
@@ -2789,6 +3020,10 @@ launch_desktop() {
   fi
 
   if [ $dbus_missing -eq 1 ] || [ $pulse_missing -eq 1 ] || [ $lib_missing -eq 1 ]; then
+    if ! wait_for_internet 5; then
+      print_warn "No internet connection. Cannot repair missing dbus/pulseaudio/libraries; the session may fail to start correctly."
+      return 1
+    fi
     local pm
     pm=$(get_distro_pkg_manager "$distro")
     
@@ -3016,10 +3251,16 @@ launch_desktop() {
     xfce4)    startcmd="dbus-launch --exit-with-session startxfce4" ;;
     lxqt)     startcmd="dbus-launch --exit-with-session startlxqt" ;;
     mate)     startcmd="dbus-launch --exit-with-session mate-session" ;;
-    kde)      startcmd="dbus-run-session -- bash -c 'export XDG_SESSION_ID=1; export XDG_SESSION_TYPE=x11; export XDG_SESSION_CLASS=user; export XDG_SEAT=seat0; export XDG_VTNR=1; export XDG_RUNTIME_DIR=/run/user/\$(id -u); mkdir -p \$XDG_RUNTIME_DIR && chmod 700 \$XDG_RUNTIME_DIR; if [ -f /usr/local/lib/libfake-logind.so ]; then export LD_PRELOAD=/usr/local/lib/libfake-logind.so; fi; startplasma-x11'" ;;
-    gnome|gnome-flashback) startcmd="XDG_CURRENT_DESKTOP=GNOME-Flashback:GNOME XDG_MENU_PREFIX=gnome-flashback- dbus-launch --exit-with-session bash -c 'metacity & gnome-panel & (sleep 2 && command -v plank &>/dev/null && plank) & (gnome-flashback || /usr/lib/gnome-flashback/gnome-flashback || /usr/libexec/gnome-flashback) & wait'" ;;
-    budgie)   startcmd="dbus-launch --exit-with-session budgie-desktop" ;;
-    cinnamon) startcmd="dbus-launch --exit-with-session cinnamon-session" ;;
+    kde|pearos-beta) startcmd="dbus-run-session -- bash -c 'export XDG_SESSION_ID=1; export XDG_SESSION_TYPE=x11; export XDG_SESSION_CLASS=user; export XDG_SEAT=seat0; export XDG_VTNR=1; export XDG_RUNTIME_DIR=/run/user/\$(id -u); mkdir -p \$XDG_RUNTIME_DIR && chmod 700 \$XDG_RUNTIME_DIR; if [ -f /usr/local/lib/libfake-logind.so ]; then export LD_PRELOAD=/usr/local/lib/libfake-logind.so; fi; startplasma-x11'" ;;
+    gnome|gnome-flashback) 
+      if [ "$distro" = "archlinux" ]; then
+        startcmd="export XDG_CURRENT_DESKTOP=GNOME; if [ -f /usr/local/lib/libfake-logind.so ]; then export LD_PRELOAD=/usr/local/lib/libfake-logind.so; fi; dbus-launch --exit-with-session gnome-session"
+      else
+        startcmd="XDG_CURRENT_DESKTOP=GNOME-Flashback:GNOME XDG_MENU_PREFIX=gnome-flashback- dbus-launch --exit-with-session bash -c 'metacity & gnome-panel & (sleep 2 && command -v plank &>/dev/null && plank) & (gnome-flashback || /usr/lib/gnome-flashback/gnome-flashback || /usr/libexec/gnome-flashback) & wait'"
+      fi
+      ;;
+    budgie)   startcmd="export XDG_CURRENT_DESKTOP=Budgie:GNOME; if [ -f /usr/local/lib/libfake-logind.so ]; then export LD_PRELOAD=/usr/local/lib/libfake-logind.so; fi; dbus-launch --exit-with-session budgie-desktop" ;;
+    cinnamon) startcmd="export XDG_CURRENT_DESKTOP=X-Cinnamon; export CINNAMON_2D=1; if [ -f /usr/local/lib/libfake-logind.so ]; then export LD_PRELOAD=/usr/local/lib/libfake-logind.so; fi; dbus-launch --exit-with-session cinnamon-session --validating" ;;
     openbox)  startcmd="dbus-launch --exit-with-session openbox-session" ;;
     *)        startcmd="dbus-launch --exit-with-session ${DE_STARTCMD[$de]}" ;;
   esac
@@ -3027,6 +3268,9 @@ launch_desktop() {
   if [ "$de" = "gnome" ] || [ "$de" = "gnome-flashback" ]; then
     # 1. Ensure Plank binary is installed inside the container
     if ! proot-distro login "$distro" -- command -v plank &>/dev/null; then
+      if ! wait_for_internet 5; then
+        print_warn "No internet connection. Skipping Plank dock install."
+      else
       print_step "Plank dock not found inside ${distro}. Installing Plank..."
       run_with_spinner "Updating package index" proot-distro login "$distro" -- env DEBIAN_FRONTEND=noninteractive apt-get update -y || true
       
@@ -3055,6 +3299,7 @@ launch_desktop() {
             cd /tmp && rm -rf plank-reloaded 2>/dev/null || true
           fi
         " >> "$LOG_FILE" 2>&1 || true
+      fi
       fi
     fi
 
@@ -3222,7 +3467,11 @@ EOF
 
     # Start wireless VNC server on host
     if ! command -v x11vnc &>/dev/null; then
-      run_with_spinner "Installing x11vnc for Wireless Display" bash -c "pkg install x11-repo -y && apt-get update -y && pkg install x11vnc -y"
+      if ! wait_for_internet 5; then
+        print_warn "No internet connection. Skipping x11vnc install; wireless display will be unavailable."
+      else
+        run_with_spinner "Installing x11vnc for Wireless Display" bash -c "pkg install x11-repo -y && apt-get update -y && pkg install x11vnc -y"
+      fi
     fi
     if command -v x11vnc &>/dev/null; then
       local d_num="${display#*:}"
@@ -3374,6 +3623,9 @@ EOF
           # Attempt to install plank-reloaded dock for a modern app launcher experience.
           # This is fully optional - if it fails or the repository is unavailable, the
           # session continues normally without it.
+          if ! wait_for_internet 5; then
+            print_warn "No internet connection. Skipping Plank dock install."
+          else
           # Try installing the precompiled plank package first
           run_with_spinner "Installing Plank package" proot-distro login "$distro" -- bash -c "
             env DEBIAN_FRONTEND=noninteractive apt-get install -y plank 2>/dev/null || true
@@ -3399,6 +3651,7 @@ EOF
               fi
             " >> "$LOG_FILE" 2>&1 || true
           fi
+          fi
 
           # If plank was installed, configure it to autostart with the session.
           proot-distro login "$distro" -- bash -c "
@@ -3422,14 +3675,17 @@ EOF
                 chown -R \"$user\":\"$user\" \"\$u_home/.config\" 2>/dev/null || true
               fi
             fi
+            if command -v dbus-update-activation-environment &>/dev/null; then
+              dbus-update-activation-environment --all
+            fi
           " >> "$LOG_FILE" 2>&1 || true
 
           config_set_distro_field "$distro" "last_de" "gnome-flashback"
-          exec "$0" start "$distro" "$display" "gnome-flashback" -y --no-repair
+          exec "$0" start "$distro" "$display" "gnome-flashback" "" --no-repair
         else
-          install_desktop_environment "$distro" "$suggested" "y"
+          install_desktop_environment "$distro" "$suggested" ""
           config_set_distro_field "$distro" "last_de" "$suggested"
-          exec "$0" start "$distro" "$display" "$suggested" -y --no-repair
+          exec "$0" start "$distro" "$display" "$suggested" "" --no-repair
         fi
         exit 0
       else
@@ -3549,8 +3805,13 @@ EOF
       print_box_line "left" "${YELLOW}${BOLD}" "${GRAY}" "     may be missing or hidden on some devices/skins)."
       print_box_sep "─" "${YELLOW}${BOLD}"
       print_box_line "left" "${YELLOW}${BOLD}" "${GREEN}${BOLD}" "3. ALTERNATIVE METHOD (Via PC ADB if setting is missing):"
-      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   Connect phone to PC with USB debugging enabled, then run:"
-      print_box_line "left" "${YELLOW}${BOLD}" "${CYAN}" "   adb shell \"/system/bin/device_config put activity_manager max_phantom_processes 2147483647\""
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   Connect phone to PC via USB debugging and run to disable:"
+      echo ""
+      echo -e "  adb shell \"/system/bin/device_config set_sync_disabled_for_tests persistent\" && adb shell \"/system/bin/device_config put activity_manager max_phantom_processes 2147483647\" && adb shell device_config get activity_manager max_phantom_processes"
+      echo ""
+      echo -e "  ${GRAY}# Run this to revert to default settings if needed:${RESET}"
+      echo -e "  adb shell \"/system/bin/device_config set_sync_disabled_for_tests none\" && adb shell \"/system/bin/device_config delete activity_manager max_phantom_processes\" && adb shell \"settings put global settings_enable_monitor_phantom_procs true\" && adb shell \"/system/bin/device_config get activity_manager max_phantom_processes\""
+      echo ""
       print_box_bottom "${YELLOW}${BOLD}"
       echo ""
     fi
@@ -4136,8 +4397,13 @@ cmd_start() {
       print_box_line "left" "${YELLOW}${BOLD}" "${GRAY}" "     may be missing or hidden on some devices/skins)."
       print_box_sep "─" "${YELLOW}${BOLD}"
       print_box_line "left" "${YELLOW}${BOLD}" "${GREEN}${BOLD}" "3. ALTERNATIVE METHOD (Via PC ADB if setting is missing):"
-      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   Connect phone to PC with USB debugging enabled, then run:"
-      print_box_line "left" "${YELLOW}${BOLD}" "${CYAN}" "   adb shell \"/system/bin/device_config put activity_manager max_phantom_processes 2147483647\""
+      print_box_line "left" "${YELLOW}${BOLD}" "${WHITE}" "   Connect phone to PC via USB debugging and run to disable:"
+      echo ""
+      echo -e "  adb shell \"/system/bin/device_config set_sync_disabled_for_tests persistent\" && adb shell \"/system/bin/device_config put activity_manager max_phantom_processes 2147483647\" && adb shell device_config get activity_manager max_phantom_processes"
+      echo ""
+      echo -e "  ${GRAY}# Run this to revert to default settings if needed:${RESET}"
+      echo -e "  adb shell \"/system/bin/device_config set_sync_disabled_for_tests none\" && adb shell \"/system/bin/device_config delete activity_manager max_phantom_processes\" && adb shell \"settings put global settings_enable_monitor_phantom_procs true\" && adb shell \"/system/bin/device_config get activity_manager max_phantom_processes\""
+      echo ""
       print_box_bottom "${YELLOW}${BOLD}"
       echo ""
     fi
@@ -4158,9 +4424,9 @@ cmd_stop() {
   if [ -z "$target" ]; then
     run_with_spinner "Stopping all sessions" bash -c "
       # Find all active proot PIDs
-      local proot_pids=\"\"
+      proot_pids=\"\"
       for p_dir in /proc/[0-9]*; do
-        local p=\${p_dir#/proc/}
+        p=\${p_dir#/proc/}
         [ \"\$p\" -eq \"\$\$\" ] 2>/dev/null && continue
         [ \"\$p\" -eq \"\$BASHPID\" ] 2>/dev/null && continue
         if [ -f \"/proc/\$p/comm\" ] && [ \"\$(cat \"/proc/\$p/comm\" 2>/dev/null)\" = \"proot\" ]; then
@@ -4170,12 +4436,12 @@ cmd_stop() {
 
       # Kill any guest processes running inside any chroot containers
       for p_dir in /proc/[0-9]*; do
-        local p=\${p_dir#/proc/}
+        p=\${p_dir#/proc/}
         [ \"\$p\" -eq \"\$\$\" ] 2>/dev/null && continue
         [ \"\$p\" -eq \"\$BASHPID\" ] 2>/dev/null && continue
         [ \"\$p\" -eq \"\$PPID\" ] 2>/dev/null && continue
 
-        local is_guest=0
+        is_guest=0
 
         # Check 1: check if maps file contains the proot-distro installed-rootfs path
         if [ -f \"/proc/\$p/maps\" ] && grep -q \"/proot-distro/installed-rootfs/\" \"/proc/\$p/maps\" 2>/dev/null; then
@@ -4184,7 +4450,6 @@ cmd_stop() {
 
         # Check 2: check if /proc/\$p/exe points inside any proot-distro installed-rootfs
         if [ \"\$is_guest\" -eq 0 ]; then
-          local p_exe
           p_exe=\$(readlink \"/proc/\$p/exe\" 2>/dev/null)
           if [[ \"\$p_exe\" == *\"/proot-distro/installed-rootfs/\"* ]]; then
             is_guest=1
@@ -4193,7 +4458,7 @@ cmd_stop() {
 
         # Check 3: check if TracerPid is in our proot_pids list
         if [ \"\$is_guest\" -eq 0 ] && [ -f \"/proc/\$p/status\" ]; then
-          local tracer=0
+          tracer=0
           while IFS= read -r line; do
             if [[ \"\$line\" =~ ^TracerPid:[[:space:]]*([0-9]+) ]]; then
               tracer=\"\${BASH_REMATCH[1]}\"
@@ -4213,7 +4478,6 @@ cmd_stop() {
 
         # Check 4: check if cmdline contains the proot-distro installed-rootfs path
         if [ \"\$is_guest\" -eq 0 ] && [ -f \"/proc/\$p/cmdline\" ]; then
-          local p_cmd
           p_cmd=\$(cat \"/proc/\$p/cmdline\" 2>/dev/null | tr '\\0' ' ')
           if [[ \"\$p_cmd\" == *\"/proot-distro/installed-rootfs/\"* ]]; then
             is_guest=1
@@ -4222,7 +4486,6 @@ cmd_stop() {
 
         # Check 5: check if /proc/\$p/cwd or /proc/\$p/root points inside any proot-distro installed-rootfs
         if [ \"\$is_guest\" -eq 0 ]; then
-          local p_cwd p_root
           p_cwd=\$(readlink \"/proc/\$p/cwd\" 2>/dev/null)
           p_root=\$(readlink \"/proc/\$p/root\" 2>/dev/null)
           if [[ \"\$p_cwd\" == *\"/proot-distro/installed-rootfs/\"* ]] || [[ \"\$p_root\" == *\"/proot-distro/installed-rootfs/\"* ]]; then
@@ -4254,7 +4517,6 @@ cmd_stop() {
       # Find all active displays for this distro before killing the processes
       (pgrep -f 'proot-distro login.*${target}' || pgrep -f 'proot.*${target}') | while read -r pid; do
         if [ -n \"\$pid\" ] && [ \"\$pid\" -ne \"\$\$\" ] && [ \"\$pid\" -ne \"\$BASHPID\" ] && [ \"\$pid\" -ne \"\$PPID\" ] 2>/dev/null && [ \"\$(cat \"/proc/\$pid/comm\" 2>/dev/null)\" = \"proot\" ]; then
-          local disp
           disp=\$(cat \"/proc/\$pid/cmdline\" 2>/dev/null | tr '\\0' ' ' | grep -Eo 'DISPLAY=:[0-9]+|DISPLAY= :[0-9]+' | grep -Eo ':[0-9]+')
           if [ -n \"\$disp\" ]; then
             echo \"\$disp\"
@@ -4267,7 +4529,7 @@ cmd_stop() {
               [ -n \"\$p\" ] && [ \"\$p\" -ne \"\$\$\" ] && [ \"\$p\" -ne \"\$BASHPID\" ] && [ \"\$p\" -ne \"\$PPID\" ] 2>/dev/null && kill -9 \"\$p\" 2>/dev/null || true
             done
           done
-          local d_num=\"\${display#*:}\"
+          d_num=\"\${display#*:}\"
           rm -f \"/tmp/.X11-unix/X\${d_num}\" \"\${TMPDIR}/.X11-unix/X\${d_num}\" 2>/dev/null
           rm -f \"/tmp/.X\${d_num}-lock\" \"\${TMPDIR}/.X\${d_num}-lock\" 2>/dev/null
           rm -f \"/tmp/.tX\${d_num}-lock\" \"\${TMPDIR}/.tX\${d_num}-lock\" 2>/dev/null
@@ -4275,13 +4537,12 @@ cmd_stop() {
       done
       
       # Find all active proot PIDs for this distro target
-      local proot_pids=\"\"
+      proot_pids=\"\"
       for p_dir in /proc/[0-9]*; do
-        local p=\${p_dir#/proc/}
+        p=\${p_dir#/proc/}
         [ \"\$p\" -eq \"\$\$\" ] 2>/dev/null && continue
         [ \"\$p\" -eq \"\$BASHPID\" ] 2>/dev/null && continue
         if [ -f \"/proc/\$p/comm\" ] && [ \"\$(cat \"/proc/\$p/comm\" 2>/dev/null)\" = \"proot\" ]; then
-          local p_cmd
           p_cmd=\$(cat \"/proc/\$p/cmdline\" 2>/dev/null | tr '\\0' ' ')
           if [[ \"\$p_cmd\" == *\"/proot-distro/installed-rootfs/${target}\"* ]]; then
             proot_pids=\"\$proot_pids \$p\"
@@ -4291,12 +4552,12 @@ cmd_stop() {
 
       # Kill any guest processes running inside this specific distro's rootfs
       for p_dir in /proc/[0-9]*; do
-        local p=\${p_dir#/proc/}
+        p=\${p_dir#/proc/}
         [ \"\$p\" -eq \"\$\$\" ] 2>/dev/null && continue
         [ \"\$p\" -eq \"\$BASHPID\" ] 2>/dev/null && continue
         [ \"\$p\" -eq \"\$PPID\" ] 2>/dev/null && continue
 
-        local is_guest=0
+        is_guest=0
 
         # Check 1: check if maps file contains the target's rootfs path
         if [ -f \"/proc/\$p/maps\" ] && grep -q \"/proot-distro/installed-rootfs/${target}\" \"/proc/\$p/maps\" 2>/dev/null; then
@@ -4305,7 +4566,6 @@ cmd_stop() {
 
         # Check 2: check if /proc/\$p/exe points inside the target's rootfs
         if [ \"\$is_guest\" -eq 0 ]; then
-          local p_exe
           p_exe=\$(readlink \"/proc/\$p/exe\" 2>/dev/null)
           if [[ \"\$p_exe\" == *\"/proot-distro/installed-rootfs/${target}\"* ]]; then
             is_guest=1
@@ -4314,7 +4574,7 @@ cmd_stop() {
 
         # Check 3: check if TracerPid is in our proot_pids list
         if [ \"\$is_guest\" -eq 0 ] && [ -f \"/proc/\$p/status\" ]; then
-          local tracer=0
+          tracer=0
           while IFS= read -r line; do
             if [[ \"\$line\" =~ ^TracerPid:[[:space:]]*([0-9]+) ]]; then
               tracer=\"\${BASH_REMATCH[1]}\"
@@ -4334,7 +4594,6 @@ cmd_stop() {
 
         # Check 4: check if cmdline contains the target's rootfs path
         if [ \"\$is_guest\" -eq 0 ] && [ -f \"/proc/\$p/cmdline\" ]; then
-          local p_cmd
           p_cmd=\$(cat \"/proc/\$p/cmdline\" 2>/dev/null | tr '\\0' ' ')
           if [[ \"\$p_cmd\" == *\"/proot-distro/installed-rootfs/${target}\"* ]]; then
             is_guest=1
@@ -4343,7 +4602,6 @@ cmd_stop() {
 
         # Check 5: check if /proc/\$p/cwd or /proc/\$p/root points to the target's rootfs path
         if [ \"\$is_guest\" -eq 0 ]; then
-          local p_cwd p_root
           p_cwd=\$(readlink \"/proc/\$p/cwd\" 2>/dev/null)
           p_root=\$(readlink \"/proc/\$p/root\" 2>/dev/null)
           if [[ \"\$p_cwd\" == *\"/proot-distro/installed-rootfs/${target}\"* ]] || [[ \"\$p_root\" == *\"/proot-distro/installed-rootfs/${target}\"* ]]; then
@@ -4652,13 +4910,13 @@ cmd_kill() {
       cmd_stop "$found_distro"
     else
       local p_list=""
-      pgrep -f "proot" | while read -r pid; do
+      while read -r pid; do
         if [ -n "$pid" ] && [ "$pid" -ne "$$" ] && [ "$pid" -ne "$BASHPID" ] && [ "$pid" -ne "$PPID" ] 2>/dev/null && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = "proot" ]; then
           if cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' | grep -q -E "DISPLAY=${target}|DISPLAY= ${target}"; then
             p_list="$p_list $pid"
           fi
         fi
-      done
+      done < <(pgrep -f "proot")
 
       # Kill any guest processes ptraced by these proot processes
       for p_dir in /proc/[0-9]*; do
@@ -4850,6 +5108,10 @@ cmd_install() {
 
   if [ -z "$oci_image" ] && [ $is_known -eq 1 ]; then
     # Standard installation of a known distribution using its built-in recipe
+    if ! wait_for_internet 5; then
+      print_error "No internet connection. Cannot download ${distro}. Please connect and try again."
+      return 1
+    fi
     print_step "Installing ${distro} (this may take a few minutes)..."
     log "Installing distro: $distro using built-in recipe"
     # Disable line wrapping to prevent progress bar wrapping
@@ -4882,6 +5144,10 @@ cmd_install() {
         oracle)    oci_image="oraclelinux" ;;
         *)         oci_image="$distro" ;;
       esac
+    fi
+    if ! wait_for_internet 5; then
+      print_error "No internet connection. Cannot download ${distro}. Please connect and try again."
+      return 1
     fi
     print_step "Installing ${distro} from OCI image '${oci_image}' (this may take a few minutes)..."
     log "Installing distro: $distro using image: $oci_image"
@@ -5192,6 +5458,51 @@ cmd_remove_desk() {
         budgie)   rm -f /usr/share/xsessions/*budgie*.desktop 2>/dev/null || true ;;
         cinnamon) rm -f /usr/share/xsessions/*cinnamon*.desktop 2>/dev/null || true ;;
         openbox)  rm -f /usr/share/xsessions/*openbox*.desktop 2>/dev/null || true ;;
+        pearos-beta)
+          rm -f /usr/share/xsessions/*plasma*.desktop /usr/share/xsessions/*kde*.desktop 2>/dev/null || true
+
+          MANIFEST_DIR=/etc/skel/.groot-desk-pearos-manifest
+          if [ -d "\$MANIFEST_DIR" ]; then
+            # Unregister the plasmoid using the exact ID captured at install time
+            if [ -s "\$MANIFEST_DIR/plasmoid-id" ]; then
+              while read -r pid_id; do
+                [ -z "\$pid_id" ] && continue
+                kpackagetool6 --type Plasma/Applet --remove \"\$pid_id\" 2>/dev/null || true
+              done < "\$MANIFEST_DIR/plasmoid-id"
+            fi
+
+            # Reverse the launchpad 'make install' using the saved source tree, if it supports it
+            if [ -d "\$MANIFEST_DIR/launchpad-src" ]; then
+              (cd \"\$MANIFEST_DIR/launchpad-src\" && make uninstall) 2>/dev/null || touch /tmp/.groot-desk-launchpad-uninstall-unsupported
+            fi
+
+            # Remove only the icon/wallpaper/kvantum entries this install actually added,
+            # from skel and from every account the skel-sync step may have copied them into
+            for target_home in /etc/skel /root /home/*; do
+              [ -d "\$target_home" ] || continue
+              if [ -s "\$MANIFEST_DIR/icons" ]; then
+                while read -r f; do
+                  [ -z "\$f" ] && continue
+                  rm -rf \"\$target_home/.local/share/icons/\$f\" 2>/dev/null || true
+                done < "\$MANIFEST_DIR/icons"
+              fi
+              if [ -s "\$MANIFEST_DIR/wallpapers" ]; then
+                while read -r f; do
+                  [ -z "\$f" ] && continue
+                  rm -f \"\$target_home/.local/share/wallpapers/\$f\" 2>/dev/null || true
+                done < "\$MANIFEST_DIR/wallpapers"
+              fi
+              if [ -s "\$MANIFEST_DIR/kvantum" ]; then
+                while read -r f; do
+                  [ -z "\$f" ] && continue
+                  rm -rf \"\$target_home/.config/Kvantum/\$f\" 2>/dev/null || true
+                done < "\$MANIFEST_DIR/kvantum"
+              fi
+            done
+
+            rm -rf \"\$MANIFEST_DIR\" 2>/dev/null || true
+          fi
+          ;;
       esac
       rm -rf /root/.cache 2>/dev/null || true
       if [ -d /home ]; then
@@ -5200,6 +5511,14 @@ cmd_remove_desk() {
         done
       fi
     "
+  fi
+
+  if [ "$last_de" = "pearos-beta" ]; then
+    if proot-distro login "$distro" -- test -f /tmp/.groot-desk-launchpad-uninstall-unsupported 2>/dev/null; then
+      print_warn "The pearOS launchpad plasmoid has no 'make uninstall' target upstream, so its installed files were left in place."
+      print_info "Check kpackagetool6 --type Plasma/Applet --list inside ${distro} and remove any leftover launchpad files manually if needed."
+      proot-distro login "$distro" -- rm -f /tmp/.groot-desk-launchpad-uninstall-unsupported 2>/dev/null || true
+    fi
   fi
 }
 
